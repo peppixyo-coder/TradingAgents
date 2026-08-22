@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HL Paper — Institutional Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/apexcharts@3.49.1/dist/apexcharts.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="reconnect">CONNESSIONE PERSA — riconnessione…</div>
+
+<header>
+  <div class="brand">
+    <div class="logo">HL</div>
+    <div>
+      <h1>PAPER DESK <span class="chip mode" id="h-mode">—</span></h1>
+      <div class="sub mono"><span id="h-wallet">—</span> · <span id="h-model">—</span></div>
+    </div>
+  </div>
+  <div class="kpis" id="kpi-strip">
+    <div class="kpi"><label>Equity</label><b class="mono" id="k-equity">—</b><small id="k-seed"></small></div>
+    <div class="kpi"><label>P&amp;L giorno</label><b class="mono" id="k-daypnl">—</b><small id="k-daypctp"></small></div>
+    <div class="kpi"><label>P&amp;L aperto</label><b class="mono" id="k-upnl">—</b><small id="k-upnl-n"></small></div>
+    <div class="kpi"><label>Win rate</label><b class="mono" id="k-wr">—</b><small id="k-wr-n"></small></div>
+    <div class="kpi"><label>Max DD</label><b class="mono" id="k-dd">—</b><small id="k-ddnow"></small></div>
+    <div class="kpi conn">
+      <label>Feed</label>
+      <div class="dots">
+        <span class="dot" id="d-hlws" title="WS Hyperliquid"></span>
+        <span class="dot" id="d-hypaper" title="HyPaper mirror"></span>
+        <span class="dot" id="d-router" title="9Router LLM (ultimo ciclo)"></span>
+      </div>
+      <small class="mono"><span id="h-heartbeat">—</span></small>
+    </div>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="overview" class="on">Overview</button>
+  <button data-tab="trades">Trades</button>
+  <button data-tab="analytics">Analytics</button>
+  <button data-tab="agents">Agents</button>
+  <button data-tab="market">Market</button>
+  <button data-tab="system">System</button>
+  <span class="spacer"></span>
+  <a href="/api/report" target="_blank" class="ghost">Report MD</a>
+</nav>
+
+<main>
+
+<section id="tab-overview" class="on">
+  <div class="grid c-2-1">
+    <div class="card"><div class="card-h"><h2>Curva equity</h2><span class="hint">backfill cicli + live</span></div><div id="eq-chart" class="chart tall"></div></div>
+    <div class="card"><div class="card-h"><h2>Posizioni aperte</h2><span class="hint mono" id="pos-count"></span></div>
+      <table class="tbl" id="tbl-pos"><thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Lev</th><th>uPnL</th><th>%</th><th>Stop</th><th>Età</th></tr></thead><tbody></tbody></table>
+      <p class="empty" id="pos-empty">Nessuna posizione aperta.</p>
+    </div>
+  </div>
+  <div class="grid c-1-1">
+    <div class="card"><div class="card-h"><h2>Ultimo ciclo</h2><span class="hint mono" id="lc-ts"></span></div>
+      <div id="last-cycle" class="kv"></div>
+    </div>
+    <div class="card"><div class="card-h"><h2>Rischio &amp; limiti</h2></div><div id="risk-card" class="kv"></div></div>
+  </div>
+</section>
+
+<section id="tab-trades">
+  <div class="card">
+    <div class="card-h"><h2>Registro trade</h2>
+      <div class="tools">
+        <select id="f-status"><option value="">tutti</option><option value="open">open</option><option value="closed">closed</option></select>
+        <select id="f-outcome"><option value="">ogni esito</option><option value="win">win</option><option value="loss">loss</option></select>
+        <input id="f-coin" placeholder="coin…" size="6">
+        <button class="ghost" id="btn-csv">Export CSV</button>
+      </div>
+    </div>
+    <div class="chips mono" id="t-sum"></div>
+    <table class="tbl" id="tbl-trades">
+      <thead><tr><th>#</th><th>Aperto</th><th>Coin</th><th>Side</th><th>Notional</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>%</th><th>Durata</th><th>Motivo</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="tab-analytics">
+  <div class="grid c-2-2">
+    <div class="card"><div class="card-h"><h2>Distribuzione P&amp;L</h2></div><div id="an-dist" class="chart mid"></div></div>
+    <div class="card"><div class="card-h"><h2>Win-rate mobile (10)</h2></div><div id="an-roll" class="chart mid"></div></div>
+  </div>
+  <div class="grid c-2-2">
+    <div class="card"><div class="card-h"><h2>P&amp;L cumulato per trade</h2></div><div id="an-cum" class="chart mid"></div></div>
+    <div class="card"><div class="card-h"><h2>R multipli</h2><span class="hint">R = P&amp;L / rischio teorico (stop distance)</span></div><div id="an-r" class="chart mid"></div></div>
+  </div>
+  <div class="grid c-3">
+    <div class="card kv" id="an-stats"></div>
+    <div class="card kv" id="an-streaks"></div>
+    <div class="card kv" id="an-flow"></div>
+  </div>
+</section>
+
+<section id="tab-agents">
+  <div class="grid c-1-1">
+    <div class="card">
+      <div class="card-h"><h2>Pipeline agenti</h2><span class="hint mono" id="ag-ratio"></span></div>
+      <ol id="ag-pipe" class="pipe"></ol>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Attività oggi</h2></div><div id="ag-stats" class="kv"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h2>Decisione &amp; dibattito</h2><select id="ag-cycle-sel" class="mono"></select></div>
+    <div id="ag-decision" class="kv cols"></div>
+    <div class="panel-grid">
+      <div><h3>Bull</h3><pre id="ag-bull" class="mono box"></pre></div>
+      <div><h3>Bear</h3><pre id="ag-bear" class="mono box"></pre></div>
+      <div><h3>Debate</h3><pre id="ag-debate" class="mono box"></pre></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-market">
+  <div class="grid c-1-1">
+    <div class="card">
+      <div class="card-h"><h2>Universe Hyperliquid</h2><span class="hint">top volume + watchlist + posizioni</span></div>
+      <input id="mkt-filter" placeholder="filtra…" size="8">
+      <table class="tbl" id="tbl-market">
+        <thead><tr><th>Coin</th><th>Mark</th><th>24h %</th><th>Funding ann.</th><th>OI $</th><th>Vol 24h</th><th>Spread bps</th><th>OFI z*</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">* z dell'ultima finestra raccolta sul coin, se scansionato.</p>
+    </div>
+    <div class="card" id="asset-panel">
+      <div class="card-h"><h2 id="ap-title">Asset</h2><span class="hint mono" id="ap-mid"></span></div>
+      <div id="ap-chart" class="chart mid"></div>
+      <div class="grid c-2">
+        <div><h3>Order book (top)</h3><div id="ap-book" class="book mono"></div></div>
+        <div><h3>Funding 7g</h3><div id="ap-funding" class="chart short"></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-system">
+  <div class="grid c-3">
+    <div class="card"><div class="card-h"><h2>Salute</h2></div><div id="sys-health" class="kv"></div></div>
+    <div class="card"><div class="card-h"><h2>Config effettiva (read-only)</h2></div><div id="sys-cfg" class="kv"></div></div>
+    <div class="card"><div class="card-h"><h2>Errori 24h</h2></div><div id="sys-errors" class="box mono small"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h2>bot.log</h2><label class="hint"><input type="checkbox" id="log-follow" checked> follow</label></div>
+    <pre id="sys-log" class="mono box logview"></pre>
+  </div>
+</section>
+
+</main>
+<footer class="mono hint">read-only · nessun ordine inviabile da questa UI · dati: state/, mirror HyPaper, WS pubblico HL</footer>
+<script src="app.js"></script>
+</body>
+</html>

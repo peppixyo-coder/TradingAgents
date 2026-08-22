@@ -38,6 +38,24 @@ def load_dotenv(path=None):
         pass
 
 
+def _log_cycle(**kw):
+    """Appende un evento ciclo a state/cycle_report.json (JSONL, per monitor.py)."""
+    with open(os.path.join(os.path.dirname(store.DB), "cycle_report.json"), "a") as fh:
+        fh.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **kw}) + "\n")
+
+
+def log(msg):
+    """Stampa e appende a state/bot.log (log viewer della dashboard)."""
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {msg}"
+    print(line)
+    try:
+        with open(os.path.join(os.path.dirname(store.DB), "bot.log"), "a",
+                  encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
 def equity(c, cfg):
     """Equity = cash HyPaper + unrealized delle posizioni aperte."""
     acct = c.account_info(cfg.wallet)
@@ -56,7 +74,7 @@ def _has_live_stop(c, cfg, coin):
         return any(o.get("reduceOnly") and o.get("triggerPx")
                    and str(o.get("coin", "")).startswith(coin) for o in orders)
     except Exception as e:  # endpoint giu' -> non blocchiare il loop; ri-attach solo se None
-        print(f"[reconcile] frontendOpenOrders non disponibile: {e}")
+        log(f"[reconcile] frontendOpenOrders non disponibile: {e}")
         return None
 
 
@@ -65,8 +83,8 @@ def attach_stop(ex, intent):
     close_side = "short" if intent["side"] == "long" else "long"
     r = ex.place_trigger(intent["coin"], close_side, intent["qty"],
                          intent["stop_px"], tpsl="sl")
-    print(f"  stop {'attachato' if r['status'] == 'resting' else 'ESITO ' + r['status']}: "
-          f"{r.get('oid') or r.get('error')} @ {intent['stop_px']}")
+    log(f"  stop {'attachato' if r['status'] == 'resting' else 'ESITO ' + r['status']}: "
+        f"{r.get('oid') or r.get('error')} @ {intent['stop_px']}")
     if r["status"] == "resting":
         store.intent_attach_stop(intent["id"], r["oid"])
     return r
@@ -83,17 +101,18 @@ def reconcile(c, cfg, ex):
     for it in store.intents_open():
         if it["coin"] not in positions:
             store.intent_close(it["id"], "position-gone")
-            print(f"[reconcile] {it['coin']} chiusa (stop/manuale): intent #{it['id']} archiviato")
+            log(f"[reconcile] {it['coin']} chiusa (stop/manuale): intent #{it['id']} archiviato")
             continue
         live = _has_live_stop(c, cfg, it["coin"])
         if it["stop_oid"] is None or live is False:
-            print(f"[reconcile] {it['coin']}: stop mancante, ri-attach")
+            log(f"[reconcile] {it['coin']}: stop mancante, ri-attach")
             attach_stop(ex, it)
 
 
 def run_cycle(cfg, c, ex, coin):
     """Un ciclo completo su un coin: registro->dati->segnale->grafo->rischio->
     esecuzione+stop->verifica. Ritorna dict esito (per test/report)."""
+    t_start = time.time()
     if any(i["coin"] == coin for i in store.intents_open()):
         return {"coin": coin, "ofi_z": None, "conviction": None,
                 "executed": False, "reason": "posizione gia' aperta"}
@@ -117,10 +136,9 @@ def run_cycle(cfg, c, ex, coin):
 
     def done(executed, reason=None, extra=None):
         out = {"coin": coin, "mid": mid, "ofi_z": round(z, 3), "conviction": conv,
-               "sigma_ann": sigma, "atr": atr, "regime": reg,
+               "sigma_ann": sigma, "atr": atr, "regime": reg, "dur_s": round(time.time() - t_start, 1),
                "executed": executed, "reason": reason, **(extra or {})}
-        with open(os.path.join(os.path.dirname(store.DB), "cycle_report.json"), "a") as fh:
-            fh.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **out}) + "\n")
+        _log_cycle(**out)
         return out
 
     if conv == 0:
@@ -143,14 +161,16 @@ def run_cycle(cfg, c, ex, coin):
         f"Sentiment: Fear&Greed={fng_v} ({fng_c})\n"
         f"News: " + " | ".join(heads[:4])
     )
+    _t = time.time()
     g = analysts.run_graph(cfg, blob)
-    llm_side = g["decision"]["side"]
-    rationale = g["decision"].get("rationale", "")
+    gextra = {"llm_side": g["decision"]["side"], "rationale": g["decision"].get("rationale", ""),
+              "panel": g["panel"], "debate": g["debate"],
+              "llm_ms": round((time.time() - _t) * 1000)}
+    llm_side, rationale = gextra["llm_side"], gextra["rationale"]
     if llm_side == "flat":
-        return done(False, "PM: flat", {"llm_side": llm_side, "rationale": rationale})
+        return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
-        return done(False, f"LLM {llm_side} contro segnale {quant_side}",
-                    {"llm_side": llm_side, "rationale": rationale})
+        return done(False, f"LLM {llm_side} contro segnale {quant_side}", gextra)
 
     # ---- rischio ----
     eq = equity(c, cfg)
@@ -205,7 +225,7 @@ def main(argv=None):
     watchlist = [x.strip().upper() for x in
                  os.getenv("HL_WATCHLIST", "BTC").split(",") if x.strip()]
     interval = int(os.getenv("HL_SCAN_INTERVAL", "900"))
-    print(f"[loop] watchlist={watchlist} interval={interval}s mode={cfg.trading_mode}")
+    log(f"[loop] watchlist={watchlist} interval={interval}s mode={cfg.trading_mode}")
 
     while True:
         try:
@@ -213,14 +233,17 @@ def main(argv=None):
             for coin in watchlist:
                 t0 = time.time()
                 res = run_cycle(cfg, c, ex, coin)
+                if res.get("reason") == "posizione gia' aperta":
+                    _log_cycle(coin=res["coin"], stage="open",
+                               executed=False, reason=res["reason"])
                 tag = "TRADE" if res["executed"] else "skip"
-                print(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
-                      f"conv={res['conviction']} — {res.get('reason', 'ok')} "
-                      f"({time.time() - t0:.0f}s)")
+                log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
+                    f"conv={res['conviction']} — {res.get('reason', 'ok')} "
+                    f"({time.time() - t0:.0f}s)")
             with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
                 fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
         except Exception as e:
-            print(f"[loop] errore ciclo: {e!r} — riprovo al prossimo intervallo")
+            _log_cycle(stage="error", error=repr(e))
         if once:
             break
         time.sleep(interval)

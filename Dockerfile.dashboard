@@ -1,12 +1,9 @@
-# Dashboard istituzionale (T20) - stessa base del bot, entrypoint diverso.
-FROM python:3.12-slim
+# Dashboard istituzionale (T20) - deriva dall'immagine bot (già con tutte le dipendenze);
+# aggiunge solo il modulo dashboard e lo stack web.
+FROM hyperliquid_trading_agents-trading-bot:latest
 WORKDIR /app
-
-COPY pyproject.toml ./
-COPY tradingagents ./tradingagents
 COPY dashboard ./dashboard
-RUN pip install --no-cache-dir -e . \
-    && pip install --no-cache-dir "fastapi>=0.111" "uvicorn[standard]>=0.30" "websockets>=12"
+RUN pip install --no-cache-dir "fastapi>=0.111" "uvicorn[standard]>=0.30" "websockets>=12"
 
 # state/ (bot.db + cycle_report.json + bot.log) resta un volume condiviso col bot.
 VOLUME /app/state

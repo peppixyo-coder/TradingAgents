@@ -95,6 +95,54 @@ class HyperliquidExecutor:
         self._log(out)
         return out
 
+    def place_trigger(self, coin, side, qty, trigger_px, tpsl="sl"):
+        """Ordine trigger NATIVO (HyPaper lo supporta: engine/placeTriggeredOrder).
+
+        side = verso dell'ordine di chiusura: long=>buy (chiude short),
+        short=>sell (chiude long). isMarket: al trigger esegue a mid con
+        limitPx come bound di slippage (5%). Ritorna normalizzato come
+        place_market; per un trigger l'esito atteso e' 'resting'.
+        """
+        if side not in ("long", "short") or qty <= 0 or trigger_px <= 0:
+            raise ValueError(f"trigger non valido: {side}, {qty}, {trigger_px}")
+        idx, uni = self.c.asset_index(coin)
+        is_buy = side == "long"
+        slip = trigger_px * (1.05 if is_buy else 0.95)
+        wire = {
+            "a": idx,
+            "b": is_buy,
+            "p": _fmt_px(slip),
+            "s": _fmt_sz(qty, uni.get("szDecimals", 5)),
+            "r": True,
+            # Il mirror esige anche la clausola limit (tif Gtc) accanto al trigger:
+            # engine/order.ts la legge per limitPx anche con isMarket=true.
+            "t": {"trigger": {"isMarket": True,
+                              "triggerPx": _fmt_px(trigger_px), "tpsl": tpsl},
+                  "limit": {"tif": "Gtc"}},
+        }
+        t0 = time.time()
+        resp = self.c._post("/exchange", {
+            "wallet": self.cfg.wallet,
+            "action": {"type": "order", "orders": [wire], "grouping": "na"},
+        }, timeout=30)
+        out = {"coin": coin, "side": side, "tpsl": tpsl,
+               "trigger_px": trigger_px, "wire": wire,
+               "latency_ms": int((time.time() - t0) * 1000)}
+        st = ((resp.get("response", {}) or {}).get("data", {}) or {}).get("statuses", [{}])
+        st = st[0] if st else {}
+        if isinstance(st, str):
+            out.update(status="success")
+        elif "resting" in st:
+            out.update(status="resting", oid=st["resting"].get("oid"))
+        elif "filled" in st:
+            f = st["filled"]
+            out.update(status="filled", avg_px=float(f["avgPx"]),
+                       filled_sz=float(f["totalSz"]), oid=f.get("oid"))
+        else:
+            out.update(status="error", error=str(st.get("error", st)))
+        self._log(out)
+        return out
+
     @staticmethod
     def _log(row):
         os.makedirs(os.path.dirname(TRADES_LOG), exist_ok=True)

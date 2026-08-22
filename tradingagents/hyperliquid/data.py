@@ -41,8 +41,9 @@ class HyPaperClient:
                 return body
             except Exception as e:  # noqa: BLE001 - backoff su qualunque fallimento di rete
                 last = e
+                body = getattr(getattr(e, "response", None), "text", "")
                 time.sleep(0.5 * 2 ** attempt)
-        raise DataError(f"{self.base}{path} fallito dopo 5 tentativi: {last}")
+        raise DataError(f"{self.base}{path} fallito dopo 5 tentativi: {last} {body[:200]}")
 
     def meta(self, ttl=3600):
         if self._meta is None or time.time() - self._meta_ts > ttl:

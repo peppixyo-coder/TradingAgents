@@ -1,28 +1,12 @@
-FROM python:3.12-slim AS builder
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-WORKDIR /build
-COPY . .
-RUN pip install --no-cache-dir .
-
+# Bot di trading Hyperliquid (paper) — immagine runtime minimale.
 FROM python:3.12-slim
+WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+COPY pyproject.toml ./
+COPY tradingagents ./tradingagents
+RUN pip install --no-cache-dir -e .
 
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# state/ (SQLite + heartbeat) resta un volume montato per sopravvivere ai rebuild.
+VOLUME /app/state
 
-RUN useradd --create-home appuser \
- && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
-USER appuser
-WORKDIR /home/appuser/app
-
-COPY --from=builder --chown=appuser:appuser /build .
-
-ENTRYPOINT ["tradingagents"]
+CMD ["python", "-m", "tradingagents.hyperliquid.loop"]

@@ -19,24 +19,21 @@
     <div class="logo">HL</div>
     <div>
       <h1>PAPER DESK <span class="chip mode" id="h-mode">—</span></h1>
-      <div class="sub mono"><span id="h-wallet">—</span> · <span id="h-model">—</span></div>
+      <div class="sub mono"><span id="h-wallet">—</span> · <span id="h-model">—</span> ·
+        <span class="dots inline"><span class="dot" id="d-hlws" title="WS Hyperliquid"></span><span class="dot" id="d-hypaper" title="HyPaper mirror"></span><span class="dot" id="d-router" title="9Router LLM (ultimo ciclo)"></span></span>
+        · <span id="h-heartbeat">—</span></div>
     </div>
   </div>
   <div class="kpis" id="kpi-strip">
-    <div class="kpi"><label>Equity</label><b class="mono" id="k-equity">—</b><small id="k-seed"></small></div>
-    <div class="kpi"><label>P&amp;L giorno</label><b class="mono" id="k-daypnl">—</b><small id="k-daypctp"></small></div>
+    <div class="kpi"><label>Total equity</label><b class="mono" id="k-equity">—</b>
+      <small><span id="k-eqdelta" class="mono">—</span></small>
+      <svg id="k-spark" class="spark" viewBox="0 0 120 28" preserveAspectRatio="none"></svg></div>
     <div class="kpi"><label>P&amp;L aperto</label><b class="mono" id="k-upnl">—</b><small id="k-upnl-n"></small></div>
+    <div class="kpi"><label>Realized oggi</label><b class="mono" id="k-rpnl">—</b><small id="k-fees"></small></div>
     <div class="kpi"><label>Win rate</label><b class="mono" id="k-wr">—</b><small id="k-wr-n"></small></div>
-    <div class="kpi"><label>Max DD</label><b class="mono" id="k-dd">—</b><small id="k-ddnow"></small></div>
-    <div class="kpi conn">
-      <label>Feed</label>
-      <div class="dots">
-        <span class="dot" id="d-hlws" title="WS Hyperliquid"></span>
-        <span class="dot" id="d-hypaper" title="HyPaper mirror"></span>
-        <span class="dot" id="d-router" title="9Router LLM (ultimo ciclo)"></span>
-      </div>
-      <small class="mono"><span id="h-heartbeat">—</span></small>
-    </div>
+    <div class="kpi"><label>Profit factor</label><b class="mono" id="k-pf">—</b><small id="k-avl"></small></div>
+    <div class="kpi"><label>Max drawdown</label><b class="mono" id="k-dd">—</b><small id="k-ddnow"></small>
+      <div class="ddbar"><i id="dd-fill"></i><u style="left:50%"></u></div></div>
   </div>
 </header>
 
@@ -55,11 +52,23 @@
 
 <section id="tab-overview" class="on">
   <div class="grid c-2-1">
-    <div class="card"><div class="card-h"><h2>Curva equity</h2><span class="hint">backfill cicli + live</span></div><div id="eq-chart" class="chart tall"></div></div>
+    <div class="card"><div class="card-h"><h2>Curva equity</h2><span class="hint">backfill cicli + live</span>
+      <div class="tools" id="eq-tf">
+        <button class="ghost tf on" data-tf="all">All</button><button class="ghost tf" data-tf="1D">1D</button>
+        <button class="ghost tf" data-tf="4h">4h</button><button class="ghost tf" data-tf="1h">1h</button>
+      </div></div><div id="eq-chart" class="chart tall"></div></div>
     <div class="card"><div class="card-h"><h2>Posizioni aperte</h2><span class="hint mono" id="pos-count"></span></div>
       <table class="tbl" id="tbl-pos"><thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Lev</th><th>uPnL</th><th>%</th><th>Stop</th><th>Età</th></tr></thead><tbody></tbody></table>
       <p class="empty" id="pos-empty">Nessuna posizione aperta.</p>
     </div>
+  </div>
+  <div class="grid c-3">
+    <div class="card"><div class="card-h"><h2>P&amp;L per trade</h2><span class="hint">barre + cumulato</span></div><div id="ov-dist" class="chart mid"></div></div>
+    <div class="card donut-wrap"><div class="card-h"><h2>Allocazione</h2></div>
+      <div id="ov-donut" class="chart mid"></div>
+      <div class="donut-c"><b id="donut-n">0</b><small>posizioni</small></div></div>
+    <div class="card"><div class="card-h"><h2>Attività recente</h2><span class="hint">ultimi 20</span></div>
+      <ul id="ov-feed" class="feed"></ul></div>
   </div>
   <div class="grid c-1-1">
     <div class="card"><div class="card-h"><h2>Ultimo ciclo</h2><span class="hint mono" id="lc-ts"></span></div>
@@ -117,8 +126,7 @@
     <div class="card-h"><h2>Decisione &amp; dibattito</h2><select id="ag-cycle-sel" class="mono"></select></div>
     <div id="ag-decision" class="kv cols"></div>
     <div class="panel-grid">
-      <div><h3>Bull</h3><pre id="ag-bull" class="mono box"></pre></div>
-      <div><h3>Bear</h3><pre id="ag-bear" class="mono box"></pre></div>
+      <div><h3>Panel analisti</h3><pre id="ag-panel" class="mono box"></pre></div>
       <div><h3>Debate</h3><pre id="ag-debate" class="mono box"></pre></div>
     </div>
   </div>

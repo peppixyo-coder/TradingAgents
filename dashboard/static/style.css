@@ -75,7 +75,7 @@ tr.xrow>td{background:var(--panel2)}
   font-size:11.5px;line-height:1.55;white-space:pre-wrap;max-height:300px;overflow:auto}
 .box.small{font-size:11px;max-height:120px}
 .logview{max-height:420px;font-size:11px}
-.panel-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px}
+.panel-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
 @media(max-width:1100px){.panel-grid{grid-template-columns:1fr}}
 
 .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:12.5px;align-content:start}
@@ -95,5 +95,35 @@ tr.xrow>td{background:var(--panel2)}
 .book .r{display:flex;justify-content:space-between;padding:2px 6px;border-radius:4px}
 .book .b{background:rgba(38,166,154,.08)}
 .book .a{background:rgba(239,83,80,.08)}
+
+/* KPI extras */
+.spark{width:100%;height:26px;margin-top:4px}
+.ddbar{position:relative;height:4px;background:#1F2630;border-radius:2px;margin-top:5px}
+.ddbar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--warn),var(--neg));
+ border-radius:2px;transition:width .4s}
+.ddbar u{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--neg)}
+.kpi{position:relative}
+.kpi .spark{position:static;opacity:.9}
+
+/* timeframe toggle */
+.tools .tf{padding:1px 8px;font-size:10px}
+.tools .tf.on{border-color:var(--acc);color:var(--acc)}
+
+/* activity feed */
+.feed{list-style:none;display:flex;flex-direction:column;font-size:12px;max-height:260px;overflow:auto}
+.feed li{display:flex;gap:8px;align-items:baseline;padding:3px 2px;border-bottom:1px solid rgba(31,38,48,.6)}
+.feed li .fi{width:14px;text-align:center;flex:none}
+.feed li .fc{flex:none;min-width:44px;font-weight:600}
+.feed li time{margin-left:auto;color:var(--faint);font-family:var(--mono);font-size:10px;flex:none}
+.feed li span:not(.fi):not(.fc){overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.feed .dim{color:var(--faint)}
+.feed .ev-order .fi{color:#4C8DFF}
+
+/* donut center overlay */
+.donut-wrap{position:relative}
+.donut-c{position:absolute;top:50%;left:50%;transform:translate(-50%,-72%);
+ display:flex;flex-direction:column;align-items:center;pointer-events:none}
+.donut-c b{font-size:20px;font-family:var(--mono)}
+.donut-c small{color:var(--faint);font-size:10px}
 
 footer{padding:14px 20px;color:var(--faint);font-size:11px;border-top:1px solid var(--line);margin-top:8px}

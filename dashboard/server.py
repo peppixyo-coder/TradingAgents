@@ -153,7 +153,7 @@ class Agg:
                 "uPnL": round(upnl, 2),
                 "uPnLPct": round(upnl / (entry * abs(sz)) * 100, 2) if entry else 0,
                 "stop": it.get("stop_px"),
-                "dur_s": int(now - _parse_ts(it["ts"])) if it.get("ts") else None,
+                "durS": int(now - _parse_ts(it["ts"])) if it.get("ts") else None,
             })
         out.sort(key=lambda x: x["uPnLPct"], reverse=True)
         return out
@@ -388,6 +388,37 @@ class Agg:
             })
         return out
 
+    def events(self, n=20):
+        """Feed attività: ordini, chiusure/stop, trade eseguiti, veto, errori."""
+        ev = []
+        for it in store.intents_open():
+            ev.append({"ts": it["ts"], "type": "order", "coin": it["coin"],
+                       "text": f"open {it['side']} {it['qty']} @ {it['entry_px']}"})
+        with store.connect() as conn:
+            closed = conn.execute(
+                "SELECT * FROM intents WHERE status!='open' ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+        for it in (dict(r) for r in closed):
+            reason = it["close_reason"] or "chiuso"
+            ev.append({"ts": it["closed_ts"], "type": "stop" if "stop" in reason else "close",
+                       "coin": it["coin"], "text": reason})
+        for r in self.cycles[-400:]:
+            ts = r.get("ts")
+            if r.get("stage") == "error":
+                ev.append({"ts": ts, "type": "error", "coin": "",
+                           "text": (r.get("error") or "")[:120]})
+            elif r.get("executed"):
+                ev.append({"ts": ts, "type": "trade", "coin": r.get("coin", ""),
+                           "text": f"{r.get('llm_side', '')} conf {r.get('confidence', '—')}"})
+            elif str(r.get("reason", "")).startswith("veto"):
+                ev.append({"ts": ts, "type": "veto", "coin": r.get("coin", ""),
+                           "text": r["reason"]})
+            elif r.get("llm_side") and r.get("llm_side") != "flat":
+                ev.append({"ts": ts, "type": "skip", "coin": r.get("coin", ""),
+                           "text": r.get("reason") or "PM skip"})
+        ev.sort(key=lambda e: _parse_ts(e["ts"]) or 0, reverse=True)
+        return ev[:n]
+
     def logs_tail(self, n=200):
         path = os.path.join(os.path.dirname(store.DB), "bot.log")
         if not os.path.exists(path):
@@ -412,6 +443,7 @@ class Agg:
             "trades": trades,
             "market": self.market_rows(),
             "agents": self.agents_stats(),
+            "events": self.events(),
             "logs": self.logs_tail(),
             "cfg": {
                 "mode": self.cfg.trading_mode, "wallet": self.cfg.wallet,
@@ -493,15 +525,11 @@ async def api_l2book(coin: str):
 @app.get("/api/funding/{coin}")
 async def api_funding(coin: str):
     try:
-        return agg.rest({"type": "fundingHistory", "coin": f"{coin}-PERP",
-                         "startTime": int((time.time() - 7 * 86400) * 1000)})
-    except Exception:
-        try:
-            return agg.rest({"type": "fundingHistory", "coin": coin,
-                             "startTime": int((time.time() - 7 * 86400) * 1000)})
-        except Exception as e:
-            raise HTTPException(502, str(e))
-
+        return agg.rest({"type": "fundingHistory", "coin": coin,
+                         "startTime": int((time.time() - 7 * 86400) * 1000),
+                         "endTime": int(time.time() * 1000)})
+    except Exception as e:
+        raise HTTPException(502, str(e))
 
 
 

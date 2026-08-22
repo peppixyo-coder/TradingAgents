@@ -4,7 +4,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
             agents: {}, cfg: {}, conn: {}, logs: [], scans: [], tab: "overview",
-            apCoin: null, charts: {} };
+            apCoin: null, charts: {}, eqTf: "all", events: [] };
 
 /* ---------- formatters ---------- */
 const usd = v => { if (v == null || isNaN(v)) return "—";
@@ -19,6 +19,8 @@ const dur = s => s == null ? "—" :
   s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${(s / 3600).toFixed(1)}h` : `${(s / 86400).toFixed(1)}g`;
 const ago = tsStr => { const t = typeof tsStr === "number" ? tsStr / 1000 : Date.parse(tsStr);
   return t ? dur((Date.now() - t) / 1000) + " fa" : "—"; };
+const hm = tsStr => { const t = typeof tsStr === "number" ? tsStr : Date.parse(tsStr);
+  return t ? new Date(t).toTimeString().slice(0, 5) : "—"; };
 
 /* ---------- websocket ---------- */
 let ws, wsTimer;
@@ -39,10 +41,7 @@ function wsConnect() {
 /* ---------- tick (1s) ---------- */
 function onTick(m) {
   S.mids = m.mids; S.positions = m.positions;
-  setTxt("k-equity", usd(m.equity));
-  setDayPnl(m.dayPnl, m.dayPnlPct);
   setTxt("k-upnl", usd(m.unrealized));
-  $("#k-upnl").className = "mono " + cls(m.unrealized);
   renderPositions();
   if (S.tab === "market") markLiveRows();
   const ap = S.charts.ap;
@@ -51,15 +50,12 @@ function onTick(m) {
   }
 }
 function setTxt(id, v) { const e = $("#" + id); if (e) e.textContent = v; }
-function setDayPnl(v, p) {
-  setTxt("k-daypnl", usd(v)); $("#k-daypnl").className = "mono " + cls(v);
-  setTxt("k-daypctp", pct(p)); $("#k-daypctp").className = cls(v);
-}
 
 /* ---------- metrics (5s) ---------- */
 function onMetrics(m) {
   S.k = m.kpis; S.equity = m.equity; S.trades = m.trades; S.market = m.market;
   S.agents = m.agents; S.logs = m.logs; S.cfg = m.cfg; S.conn = m.conn;
+  S.events = m.events || [];
   S.scans = (m.agents.recent || []).slice().reverse();
   renderConn(m.conn); renderHeaderMeta(); renderKpiStatics();
   if (S.tab === "overview") renderOverview();
@@ -83,18 +79,47 @@ function renderHeaderMeta() {
 }
 function renderKpiStatics() {
   const k = S.k;
-  setTxt("k-seed", "seed " + usd(k.seed));
+  const d = k.dayPnlPct || 0;
+  setTxt("k-eqdelta", pct(d) + " oggi");
+  $("#k-eqdelta").className = "mono " + cls(d);
+  setTxt("k-rpnl", usd(k.realizedToday));
+  $("#k-rpnl").className = "mono " + cls(k.realizedToday);
+  setTxt("k-fees", "fee tot " + usd(k.feesTot));
   setTxt("k-wr", k.winRate == null ? "—" : k.winRate.toFixed(1) + "%");
-  setTxt("k-wr-n", `${k.wins || 0}W / ${k.losses || 0}L · PF ${num(k.profitFactor, 2)}`);
+  setTxt("k-wr-n", `${k.wins || 0}W / ${k.losses || 0}L`);
+  setTxt("k-pf", num(k.profitFactor, 2));
+  $("#k-pf").className = "mono " + (k.profitFactor >= 1 ? "pos" : "neg");
+  setTxt("k-avl", `avg ${usd(k.avgWin)} / −${usd(Math.abs(k.avgLoss || 0))}`);
   setTxt("k-dd", k.maxDD == null ? "—" : "−" + k.maxDD.toFixed(1) + "%");
-  setTxt("k-ddnow", "ora −" + (k.ddNow || 0).toFixed(1) + "%");
-  setTxt("k-upnl-n", k.closes != null ? `${k.closes} chiusi · ${k.executedN || 0} eseguiti` : "");
+  setTxt("k-ddnow", "ora −" + (k.ddNow || 0).toFixed(1) + "% · limite −10%");
+  $("#dd-fill").style.width = Math.min((k.ddNow || 0) / 10 * 100, 100) + "%";
+  drawSpark();
+}
+
+/* sparkline 24h nell'KPI equity: SVG puro, nessuna libreria */
+function drawSpark() {
+  const svg = $("#k-spark"); if (!svg) return;
+  const cut = Date.now() - 86400e3;
+  const pts = S.equity.filter(([t]) => t >= cut).map(([, v]) => v);
+  if (pts.length < 2) { svg.innerHTML = ""; return; }
+  const min = Math.min(...pts), max = Math.max(...pts), rng = (max - min) || 1;
+  const path = pts.map((v, i) =>
+    `${i ? "L" : "M"}${(i / (pts.length - 1) * 120).toFixed(1)},${(26 - (v - min) / rng * 24).toFixed(1)}`).join("");
+  const up = pts[pts.length - 1] >= pts[0];
+  svg.innerHTML = `<path d="${path}" fill="none" stroke="${up ? "#26A69A" : "#EF5350"}" stroke-width="1.5"/>`;
 }
 
 /* ---------- overview ---------- */
-function renderOverview() { drawEquity(); renderPositions(); renderLastCycle(); renderRisk(); }
+function renderOverview() {
+  drawEquity(); renderPositions(); renderLastCycle(); renderRisk();
+  drawDistOv(); drawDonut(); renderFeed();
+}
+
+const EQ_TF_S = { "1h": 3600e3, "4h": 14400e3, "1D": 86400e3, "all": Infinity };
 function drawEquity() {
   if (!S.equity.length) return;
+  const pts = S.equity.filter(([t]) => t >= Date.now() - EQ_TF_S[S.eqTf])
+    .map(([t, v]) => ({ time: Math.floor(t / 1000), value: v }));
   let ch = S.charts.eq;
   if (!ch) {
     ch = LightweightCharts.createChart($("#eq-chart"), {
@@ -104,12 +129,86 @@ function drawEquity() {
       timeScale: { timeVisible: true, borderColor: "#1F2630" },
       rightPriceScale: { borderColor: "#1F2630" },
       crosshair: { mode: 0 }, autoSize: true });
-    ch.addAreaSeries({ lineColor: "#4C8DFF", topColor: "rgba(76,141,255,.25)",
+    S.charts.eqS = ch.addAreaSeries({ lineColor: "#4C8DFF", topColor: "rgba(76,141,255,.25)",
       bottomColor: "rgba(76,141,255,0)", lineWidth: 2, priceFormat: { type: "price", precision: 2 } });
+    S.charts.ddS = ch.addHistogramSeries({ priceScaleId: "dd",
+      priceFormat: { type: "percent" }, color: "rgba(239,83,80,.55)" });
+    ch.priceScale("dd").applyOptions({ scaleMargins: { top: .82, bottom: 0 } });
     S.charts.eq = ch;
   }
-  ch.series()[0].setData(S.equity.map(([t, v]) => ({ time: Math.floor(t / 1000), value: v })));
+  const eqS = S.charts.eqS, ddS = S.charts.ddS;
+  eqS.setData(pts);
+  let peak = -Infinity; // istogramma drawdown: (peak−eq)/peak, appeso sotto
+  ddS.setData(S.equity.filter(([t]) => t >= Date.now() - EQ_TF_S[S.eqTf]).map(([t, v]) => {
+    peak = Math.max(peak, v);
+    return { time: Math.floor(t / 1000), value: peak ? -(peak - v) / peak : 0 };
+  }));
   ch.timeScale().fitContent();
+}
+
+/* P&L per trade: barre + linea cumulata (Apex combo) */
+function drawDistOv() {
+  const cl = S.trades.filter(t => t.status === "closed");
+  if (!cl.length) return emptyChart("ov-dist");
+  let cum = 0;
+  const cats = cl.map((t, i) => `T${i + 1}`);
+  const bars = cl.map(t => +t.pnl.toFixed(2));
+  const line = cl.map(t => +(cum += t.pnl).toFixed(2));
+  if (apexInstances["ov-dist"]) apexInstances["ov-dist"].destroy();
+  apexInstances["ov-dist"] = new ApexCharts($("#ov-dist"), {
+    chart: { type: "line", height: 260, background: "transparent",
+      fontFamily: "IBM Plex Mono, monospace", toolbar: { show: false }, animations: { enabled: false } },
+    theme: { mode: "dark" },
+    series: [
+      { name: "P&L", type: "bar", data: bars },
+      { name: "Cumulato", type: "line", data: line }],
+    colors: ["#26A69A", "#4C8DFF"],
+    stroke: { curve: "straight", width: [0, 2] },
+    fill: { opacity: [.8, 1] },
+    dataLabels: { enabled: false },
+    xaxis: { categories: cats, labels: { style: { fontSize: "9px" } } },
+    yaxis: { labels: { formatter: v => (+v).toFixed(0) } },
+    grid: { borderColor: "#1F2630" },
+    tooltip: { theme: "dark" }, legend: { show: true, fontSize: "10px" },
+  });
+  apexInstances["ov-dist"].render();
+}
+
+/* Donut allocazione per coin (notionale |size|·mark), centro = n posizioni */
+function drawDonut() {
+  const ps = S.positions.filter(p => p.szi !== 0);
+  $("#donut-n").textContent = ps.length;
+  if (!ps.length) return emptyChart("ov-donut");
+  if (apexInstances["ov-donut"]) apexInstances["ov-donut"].destroy();
+  const byCoin = {};
+  ps.forEach(p => { byCoin[p.coin] = (byCoin[p.coin] || 0) + Math.abs(p.szi * p.mark); });
+  apexInstances["ov-donut"] = new ApexCharts($("#ov-donut"), {
+    chart: { type: "donut", height: 260, background: "transparent",
+      fontFamily: "IBM Plex Mono, monospace", animations: { enabled: false } },
+    theme: { mode: "dark" },
+    series: Object.values(byCoin).map(v => +v.toFixed(1)),
+    labels: Object.keys(byCoin),
+    colors: ["#26A69A", "#EF5350", "#4C8DFF", "#E8B341", "#7B5CFF", "#38BDF8"],
+    stroke: { width: 1, colors: ["#12161C"] },
+    legend: { position: "bottom", fontSize: "10px" },
+    dataLabels: { enabled: false },
+    tooltip: { theme: "dark", y: { formatter: v => usd(v) } },
+  });
+  apexInstances["ov-donut"].render();
+}
+
+const EV_META = {
+  order: { i: "◆", c: "ev-order" }, trade: { i: "●", c: "pos" },
+  stop: { i: "✖", c: "neg" }, close: { i: "■", c: "" },
+  veto: { i: "⊘", c: "warn" }, error: { i: "!", c: "neg" }, skip: { i: "·", c: "dim" },
+};
+function renderFeed() {
+  const ul = $("#ov-feed"); if (!ul || !S.events) return;
+  ul.innerHTML = S.events.slice(0, 20).map(e => {
+    const m = EV_META[e.type] || { i: "•", c: "" };
+    return `<li class="${m.c}"><span class="fi">${m.i}</span><span class="fc mono">${esc(e.coin)}</span>
+      <span>${esc(e.text)}</span><time>${hm(e.ts)}</time></li>`;
+  }).join("") || "<li><span class='empty'>nessun evento.</span></li>";
 }
 function renderPositions() {
   const tb = $("#tbl-pos tbody"); const ps = S.positions;
@@ -307,7 +406,6 @@ function renderAgents() {
 }
 function showCycle(i) {
   const r = S.scans[i]; if (!r) return;
-  const p = r.panel || {};
   $("#ag-decision").innerHTML = kv([
     ["Coin", r.coin], ["Segnale quant", r.ofi_z != null ? "z=" + num(r.ofi_z, 2) : "—"],
     ["LLM side", r.llm_side || "—"], ["Conviction", r.confidence ?? "—"],
@@ -316,8 +414,7 @@ function showCycle(i) {
     ["Durata", r.dur_s ? r.dur_s + " s" : "—"]]);
   $("#ag-decision").insertAdjacentHTML("beforeend",
     `<label>Rationale</label><b class="sans" style="white-space:normal">${esc(r.rationale || "—")}</b>`);
-  $("#ag-bull").textContent = p.bull || "—";
-  $("#ag-bear").textContent = p.bear || "—";
+  $("#ag-panel").textContent = r.panel || "—";
   $("#ag-debate").textContent = r.debate || "—";
 }
 
@@ -354,17 +451,20 @@ async function openAsset(coin) {
         grid: { vertLines: { color: "#1F2630" }, horzLines: { color: "#1F2630" } },
         timeScale: { timeVisible: true, borderColor: "#1F2630" },
         rightPriceScale: { borderColor: "#1F2630" }, autoSize: true });
-      S.charts.ap.addCandlestickSeries({
+      S.charts.apC = S.charts.ap.addCandlestickSeries({
         upColor: "#26A69A", downColor: "#EF5350", borderVisible: false,
         wickUpColor: "#26A69A", wickDownColor: "#EF5350" });
     }
-    S.charts.ap.series()[0].setData(candles.map(c => ({
+    S.charts.apC.setData(candles.map(c => ({
       time: Math.floor(c.t / 1000), open: +c.o, high: +c.h, low: +c.l, close: +c.c })));
     S.charts.ap.timeScale().fitContent();
     const book = await (await fetch(`/api/l2book/${coin}`)).json();
-    const lv = book.level || book.levels || [];
-    const bids = (lv.find(l => l.side === "B")?.levels || []).slice(0, 6);
-    const asks = (lv.find(l => l.side === "A")?.levels || []).slice(0, 6).reverse();
+    const raw = Array.isArray(book.levels) ? book.levels : (book.level || []);
+    const pair = Array.isArray(raw[0]) ? raw
+      : [(raw.find(l => l.side === "B") || {}).levels || [],
+         (raw.find(l => l.side === "A") || {}).levels || []];
+    const bids = pair[0].slice(0, 6);
+    const asks = pair[1].slice(0, 6).reverse();
     $("#ap-book").innerHTML =
       asks.map(l => `<div class="r a"><span>${px(l.px)}</span><span>${num(l.sz, 3)}</span></div>`).join("") +
       bids.map(l => `<div class="r b"><span>${px(l.px)}</span><span>${num(l.sz, 3)}</span></div>`).join("");
@@ -437,5 +537,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const tr = e.target.closest("tr[data-coin]"); if (tr) openAsset(tr.dataset.coin); });
   $("#mkt-filter").oninput = renderMarket;
   $("#ag-cycle-sel").onchange = e => showCycle(+e.target.value);
+  $$("#eq-tf .tf").forEach(b => b.onclick = () => {
+    S.eqTf = b.dataset.tf;
+    $$("#eq-tf .tf").forEach(x => x.classList.toggle("on", x === b));
+    drawEquity();
+  });
   wsConnect();
 });

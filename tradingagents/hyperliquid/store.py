@@ -4,6 +4,7 @@ Scelta T15: SQLite e non JSON perche' il requisito e' sopravvivere a crash
 mid-write senza corrompere lo stato (baseline DD, intenti posizione con stop).
 Un file: <repo>/state/bot.db. I trades restano su JSONL append-only (executor).
 """
+import contextlib
 import os
 import sqlite3
 import time
@@ -33,12 +34,22 @@ CREATE TABLE IF NOT EXISTS intents (
 """
 
 
+@contextlib.contextmanager
 def connect():
+    # ponytail: journal gestito UNA volta a provisioning (DELETE: il -shm di WAL
+    # non regge il bind-mount Windows di Docker Desktop). Upgrade: volume Linux.
+    # `with sqlite3.connect()` NON chiude la connessione: qui commit+close espliciti.
     os.makedirs(os.path.dirname(DB), exist_ok=True)
     conn = sqlite3.connect(DB, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init():

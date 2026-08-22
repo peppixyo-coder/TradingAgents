@@ -11,6 +11,8 @@ import time
 
 import requests
 
+from . import store
+
 FNG_URL = "https://api.alternative.me/fng/?limit=1"
 RSS_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -42,7 +44,9 @@ class HyPaperClient:
             except Exception as e:  # noqa: BLE001 - backoff su qualunque fallimento di rete
                 last = e
                 body = getattr(getattr(e, "response", None), "text", "")
-                time.sleep(0.5 * 2 ** attempt)
+                # ponytail: il 429 di HL e' una finestra per-minuto -> attende
+                # oltre la finestra invece del backoff breve da thundering-herd.
+                time.sleep(21 if "429" in str(last) else 0.5 * 2 ** attempt)
         raise DataError(f"{self.base}{path} fallito dopo 5 tentativi: {last} {body[:200]}")
 
     def meta(self, ttl=3600):
@@ -77,6 +81,20 @@ class HyPaperClient:
                  "l": float(c["l"]), "c": float(c["c"]), "v": float(c["v"])}
                 for c in raw]
 
+    def candles_cached(self, coin, interval, lookback_ms):
+        """Candele con cache kv condivisa; TTL = durata del timeframe."""
+        ttl = {"1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 600)
+        key = f"candles:{coin}:{interval}"
+        try:
+            if time.time() - float(store.kv_get(key + ":ts") or 0) < ttl:
+                return json.loads(store.kv_get(key))
+        except (ValueError, TypeError):
+            pass
+        out = self.candles(coin, interval, lookback_ms)
+        store.kv_set(key, json.dumps(out))
+        store.kv_set(key + ":ts", time.time())
+        return out
+
     def clearinghouse_state(self, user):
         return self._post("/info", {"type": "clearinghouseState", "user": user})
 
@@ -89,29 +107,41 @@ class HyPaperClient:
         return self._post("/hypaper", {"user": user, "type": "setBalance", "balance": amount})
 
 
-async def collect_trades(coin, seconds):
-    """Raccoglie i print pubblici dal WS Hyperliquid per `seconds`.
+async def collect_trades_multi(coins, seconds):
+    """UNA connessione WS, N sottoscrizioni trades: {coin: [print]}.
 
-    Ritorna lista [{px, sz, side, time}]; side 'B' = aggressore compratore.
+    Il pipeline multi-asset non puo' permettersi N connessioni seriali da
+    `seconds` secondi: una sola socket copre tutto il set candidato.
     """
     import websockets  # dipendenza dev gia' presente nel fork
 
-    out = []
+    out = {k: [] for k in coins}
+    if not coins:
+        return out
+    want = set(coins)
     async with websockets.connect(WS_URL, max_size=None) as ws:
-        await ws.send(json.dumps({"method": "subscribe",
-                                  "subscription": {"type": "trades", "coin": coin}}))
+        for k in coins:
+            await ws.send(json.dumps({"method": "subscribe",
+                                      "subscription": {"type": "trades", "coin": k}}))
         t_end = asyncio.get_event_loop().time() + seconds
         while asyncio.get_event_loop().time() < t_end:
             try:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
             except asyncio.TimeoutError:
                 continue
-            if msg.get("channel") == "trades":
-                for t in msg.get("data", []):
-                    if t.get("coin") == coin:
-                        out.append({"px": float(t["px"]), "sz": float(t["sz"]),
-                                    "side": t.get("side", "B"), "time": t.get("time")})
+            if msg.get("channel") != "trades":
+                continue
+            for t in msg.get("data", []):
+                k = t.get("coin")
+                if k in want:
+                    out[k].append({"px": float(t["px"]), "sz": float(t["sz"]),
+                                   "side": t.get("side", "B"), "time": t.get("time")})
     return out
+
+
+async def collect_trades(coin, seconds):
+    """Compat: raccolta per un solo coin (delega al collettore multi)."""
+    return (await collect_trades_multi([coin], seconds))[coin]
 
 
 def fng():

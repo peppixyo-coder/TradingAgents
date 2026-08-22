@@ -2,13 +2,14 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="cache-control" content="no-cache">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HL Paper — Institutional Desk</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/apexcharts@3.49.1/dist/apexcharts.min.js"></script>
-<link rel="stylesheet" href="style.css">
+<!-- vendorizzato: la rete host è flaky e i CDN bloccavano tutto il rendering -->
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="vendor/apexcharts.min.js"></script>
+<link rel="stylesheet" href="style.css?v=2">
+<link rel="icon" href="data:,">
 </head>
 <body>
 <div id="reconnect">CONNESSIONE PERSA — riconnessione…</div>
@@ -126,7 +127,7 @@
 <section id="tab-market">
   <div class="grid c-1-1">
     <div class="card">
-      <div class="card-h"><h2>Universe Hyperliquid</h2><span class="hint">top volume + watchlist + posizioni</span></div>
+      <div class="card-h"><h2>Universe Hyperliquid</h2><span class="hint">screener dinamico + posizioni</span></div>
       <input id="mkt-filter" placeholder="filtra…" size="8">
       <table class="tbl" id="tbl-market">
         <thead><tr><th>Coin</th><th>Mark</th><th>24h %</th><th>Funding ann.</th><th>OI $</th><th>Vol 24h</th><th>Spread bps</th><th>OFI z*</th><th></th></tr></thead>
@@ -159,6 +160,5 @@
 
 </main>
 <footer class="mono hint">read-only · nessun ordine inviabile da questa UI · dati: state/, mirror HyPaper, WS pubblico HL</footer>
-<script src="app.js"></script>
-</body>
+<script src="app.js?v=2"></script>
 </html>

@@ -7,9 +7,10 @@ const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
             apCoin: null, charts: {} };
 
 /* ---------- formatters ---------- */
-const usd = v => v == null || isNaN(v) ? "—" :
-  (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US",
-    { minimumFractionDigits: 2, maximumFractionDigits: Math.abs(v) < 100 ? 2 : 0 });
+const usd = v => { if (v == null || isNaN(v)) return "—";
+  const d = Math.abs(v) < 100 ? 2 : 0;
+  return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US",
+    { minimumFractionDigits: d, maximumFractionDigits: d }); };
 const px = v => v == null ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 4 });
 const pct = (v, d = 2) => v == null || isNaN(v) ? "—" : (v > 0 ? "+" : "") + v.toFixed(d) + "%";
 const cls = v => v > 0 ? "pos" : v < 0 ? "neg" : "";

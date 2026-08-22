@@ -55,3 +55,33 @@ def size_order(cfg, balance, open_positions, mid, sigma, atr, conviction):
         "leverage": lev,
         "stop_dist": round(stop_dist, 1),
     }
+
+
+MAX_ASSET_FRAC = 0.10      # esposizione max per singolo asset (% equity)
+CORR_THRESHOLD = 0.7       # |rho| close 30d oltre il quale due asset sono correlati
+CORR_MAX_CLUSTER = 3       # max posizioni contemporanee in un cluster correlato
+
+
+def _pos_value(p):
+    pos = p["position"]
+    v = pos.get("positionValue")
+    if v is not None:
+        return float(v)
+    return abs(float(pos["szi"])) * float(pos.get("entryPx") or 0)
+
+
+def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
+    """Limiti portafoglio spec multi-asset: <=10% equity/asset, leva totale
+    <= lev_cap, cluster correlati <= CORR_MAX_CLUSTER. Motivi (vuota = ok)."""
+    reasons = []
+    if eq <= 0:
+        return ["EQUITY<=0"]
+    expo = {p["position"]["coin"]: _pos_value(p)
+            for p in asset_positions if float(p["position"]["szi"]) != 0}
+    if (expo.get(coin, 0.0) + notional) / eq > MAX_ASSET_FRAC:
+        reasons.append(f"ASSET_CAP>{MAX_ASSET_FRAC:.0%}")
+    if (sum(expo.values()) + notional) / eq > cfg.lev_cap:
+        reasons.append(f"LEV_TOT>{cfg.lev_cap}x")
+    if corr_count + 1 > CORR_MAX_CLUSTER:
+        reasons.append(f"CORR_CLUSTER {corr_count}+1>{CORR_MAX_CLUSTER}")
+    return reasons

@@ -7,10 +7,11 @@ Decisioni T15/T16 ratificate:
 - Stop = ordine trigger NATIVO HyPaper (t.trigger tpsl=sl, reduce-only, market):
   sopravvive al crash del bot; il loop lo ri-attacha se manca. TP: nessuno in v1
   (il PM rivaluta a ogni ciclo; flip/exit gestiti dallo SL o da decisione nuova).
-- Watchlist da HL_WATCHLIST (default BTC): lo screener top-20 generalizza dopo
-  (ticket economia screener gia' ratificato); una posizione max per coin.
+- Universo dinamico (spec multi-asset): registry da API -> screener
+  (vol/OI/eta'/spread) -> scan tecnico -> top-3 trigger per |OFI_z|;
+  una posizione max per coin. Limiti portafoglio in risk.portfolio_veto.
 
-Run: python -m tradingagents.hyperliquid.loop [--once] [--no-preflight]
+Run: python -m tradingagents.hyperliquid.loop [--once] [--no-preflight] [--close-all]
 """
 import asyncio
 import json
@@ -18,9 +19,9 @@ import os
 import sys
 import time
 
-from . import analysts, risk, signal, store
+from . import analysts, registry, risk, scanner, screener, signal, store
 from .config import load
-from .data import HyPaperClient, collect_trades, fng, rss_headlines
+from .data import HyPaperClient, collect_trades_multi, fng, rss_headlines
 from .executor import HyperliquidExecutor
 
 
@@ -109,23 +110,32 @@ def reconcile(c, cfg, ex):
             attach_stop(ex, it)
 
 
-def run_cycle(cfg, c, ex, coin):
-    """Un ciclo completo su un coin: registro->dati->segnale->grafo->rischio->
+def gather(cfg, c, coin):
+    """Fetch completo per un coin: path legacy quando il pipeline non passa `pre`."""
+    ctx = c.ctx_for(coin)
+    mid = float(c.all_mids()[coin])
+    return {"ctx": ctx, "mid": mid,
+            "h1": c.candles_cached(coin, "1h", 7 * 24 * 3600 * 1000),
+            "h4": c.candles(coin, "4h", 30 * 24 * 3600 * 1000),
+            "d1": c.candles_cached(coin, "1d", 90 * 24 * 3600 * 1000),
+            "trades": asyncio.run(
+                collect_trades_multi([coin], cfg.ws_collect_seconds))[coin],
+            "fng": fng(), "heads": rss_headlines()}
+
+
+def run_cycle(cfg, c, ex, coin, pre=None):
+    """Un ciclo completo su un coin: dati->segnale->grafo->rischio->
     esecuzione+stop->verifica. Ritorna dict esito (per test/report)."""
     t_start = time.time()
     if any(i["coin"] == coin for i in store.intents_open()):
         return {"coin": coin, "ofi_z": None, "conviction": None,
                 "executed": False, "reason": "posizione gia' aperta"}
-    idx, uni = c.asset_index(coin)
-    ctx = c.ctx_for(coin)
-    mid = float(c.all_mids()[coin])
+    pre = pre or gather(cfg, c, coin)
+    ctx, mid = pre["ctx"], float(pre["mid"])
+    h1, h4, d1, trades = pre["h1"], pre["h4"], pre["d1"], pre["trades"]
     day_chg = (mid / float(ctx["prevDayPx"]) - 1) * 100
-    h1 = c.candles(coin, "1h", 7 * 24 * 3600 * 1000)
-    h4 = c.candles(coin, "4h", 30 * 24 * 3600 * 1000)
-    d1 = c.candles(coin, "1d", 90 * 24 * 3600 * 1000)
-    trades = asyncio.run(collect_trades(coin, cfg.ws_collect_seconds))
-    fng_v, fng_c = fng()
-    heads = rss_headlines()
+    fng_v, fng_c = pre["fng"]
+    heads = pre["heads"]
 
     # ---- segnale ----
     z = signal.ofi_z(signal.ofi_fraction(trades))
@@ -175,12 +185,18 @@ def run_cycle(cfg, c, ex, coin):
     # ---- rischio ----
     eq = equity(c, cfg)
     vetoes = risk.check_dd_veto(cfg, eq)
-    n_open = sum(1 for p in c.clearinghouse_state(cfg.wallet)["assetPositions"]
+    ch_now = c.clearinghouse_state(cfg.wallet)
+    n_open = sum(1 for p in ch_now["assetPositions"]
                  if float(p["position"]["szi"]) != 0)
     plan = risk.size_order(cfg, eq, n_open, mid, sigma, atr, conv)
     stop_px = mid - plan["stop_dist"] if llm_side == "long" else mid + plan["stop_dist"]
-    if vetoes or plan["veto"]:
-        return done(False, f"veto: {vetoes or plan['veto']}", {"plan": plan})
+    corr_n = scanner.correlated_open_count(
+        [x["c"] for x in d1], [i["coin"] for i in store.intents_open()], coin,
+        lambda oc: c.candles_cached(oc, "1d", 90 * 24 * 3600 * 1000))
+    pv = risk.portfolio_veto(cfg, eq, coin, plan["notional"],
+                             ch_now["assetPositions"], corr_n)
+    if vetoes or plan["veto"] or pv:
+        return done(False, f"veto: {vetoes or plan['veto'] or pv}", {"plan": plan})
 
     # ---- esecuzione + stop nativo + persistenza intento ----
     ex.set_leverage(coin, plan["leverage"])
@@ -210,6 +226,41 @@ def run_cycle(cfg, c, ex, coin):
     })
 
 
+def close_position(c, cfg, ex, it):
+    """Chiude una posizione a mercato (reduce-only) e cancella lo stop resting."""
+    if it.get("stop_oid"):
+        try:
+            ex.cancel_order(it["coin"], it["stop_oid"])
+        except Exception as e:  # noqa: BLE001 - lo stop e' magari gia' partito
+            log(f"[close] {it['coin']} cancel stop fallito (procedo): {e}")
+    ch = c.clearinghouse_state(cfg.wallet)
+    pos = next((p["position"] for p in ch["assetPositions"]
+                if p["position"]["coin"] == it["coin"]
+                and float(p["position"]["szi"]) != 0), None)
+    if not pos:
+        store.intent_close(it["id"], "gia'-piatta")
+        log(f"[close] {it['coin']}: nessuna posizione, intento archiviato")
+        return
+    side = "short" if float(pos["szi"]) > 0 else "long"
+    qty = abs(float(pos["szi"]))
+    fill = ex.place_market(it["coin"], side, qty, float(c.all_mids()[it["coin"]]),
+                           reduce_only=True)
+    ok = fill["status"] == "filled"
+    store.intent_close(it["id"], "chiusura-manuale" if ok
+                       else f"chiusura-fallita:{fill['status']}")
+    log(f"[close] {it['coin']} {qty} {side} -> {fill['status']} @ {fill.get('avg_px')}")
+
+
+def _write_screener_json(rows, funnel, triggered=()):
+    """Dump per la dashboard (tab Market), accanto al DB in state/."""
+    path = os.path.join(os.path.dirname(store.DB), "screener.json")
+    with open(path, "w") as fh:
+        json.dump({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "funnel": funnel,
+                   "triggered": list(triggered),
+                   "rows": [{k: v for k, v in r.items() if k != "ctx"}
+                            for r in rows]}, fh)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     once = "--once" in argv
@@ -222,28 +273,66 @@ def main(argv=None):
     store.init()
     c = HyPaperClient(cfg.hypaper_url)
     ex = HyperliquidExecutor(c, cfg)
-    watchlist = [x.strip().upper() for x in
-                 os.getenv("HL_WATCHLIST", "BTC").split(",") if x.strip()]
     interval = int(os.getenv("HL_SCAN_INTERVAL", "900"))
-    log(f"[loop] watchlist={watchlist} interval={interval}s mode={cfg.trading_mode}")
+    if "--close-all" in argv:
+        for it in store.intents_open():
+            close_position(c, cfg, ex, dict(it))
+        return
+    log(f"[loop] universo dinamico (registry+screener) interval={interval}s "
+        f"mode={cfg.trading_mode}")
 
     while True:
         try:
             reconcile(c, cfg, ex)
-            for coin in watchlist:
+            t_cycle = time.time()
+            mids = c.all_mids()
+            _, n_perp, n_spot = registry.universe(c)
+            log(f"[universe] {n_perp} perp + {n_spot} spot; mids {len(mids)}")
+
+            passed, funnel = screener.screene(c, mids)
+            log("[screener] " + " -> ".join(f"{k}={v}" for k, v in funnel.items())
+                + f"\n[screener] passati ({len(passed)}): "
+                + ", ".join(r["coin"] for r in passed))
+
+            coins = [r["coin"] for r in passed]
+            flow = asyncio.run(collect_trades_multi(coins, cfg.ws_collect_seconds))
+            prev = json.loads(store.kv_get("ctx_prev") or "{}")
+            h1_map = {k: c.candles_cached(k, "1h", 7 * 24 * 3600 * 1000)
+                      for k in coins}
+            d1_map = {k: c.candles_cached(k, "1d", 90 * 24 * 3600 * 1000)
+                      for k in coins}
+            rows = scanner.scan(passed, h1_map, d1_map, flow)
+            scanner.save_ctx_snapshot(rows)
+            scanner.ctx_deltas(rows, prev)
+            for r in rows:
+                log(f"[scan] {r['coin']:8s} px={r['mid']:,.4g} z={r['ofi_z']:+.2f} "
+                    f"rsi={r['rsi']} macd_h={r['macd_h']} vol_x={r['vol_x']} "
+                    f"fundD={r['funding_delta']} oiD={r['oi_delta']}")
+            trig = scanner.triggers(rows, cfg.signal_z_min)
+            _write_screener_json(rows, funnel, [t["coin"] for t in trig])
+            log(f"[trigger] {len(trig)}/{len(rows)} sopra {cfg.signal_z_min}s: "
+                f"{[r['coin'] for r in trig]}")
+
+            fng_v, fng_c = fng()
+            heads = rss_headlines()
+            for r in trig:
                 t0 = time.time()
-                res = run_cycle(cfg, c, ex, coin)
-                if res.get("reason") == "posizione gia' aperta":
-                    _log_cycle(coin=res["coin"], stage="open",
-                               executed=False, reason=res["reason"])
+                pre = {"mid": r["mid"], "ctx": r["ctx"], "h1": h1_map[r["coin"]],
+                       "h4": c.candles(r["coin"], "4h", 30 * 24 * 3600 * 1000),
+                       "d1": d1_map[r["coin"]],
+                       "trades": flow.get(r["coin"], []),
+                       "fng": (fng_v, fng_c), "heads": heads}
+                res = run_cycle(cfg, c, ex, r["coin"], pre=pre)
                 tag = "TRADE" if res["executed"] else "skip"
                 log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
-                    f"conv={res['conviction']} — {res.get('reason', 'ok')} "
+                    f"conv={res['conviction']} - {res.get('reason', 'ok')} "
                     f"({time.time() - t0:.0f}s)")
             with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
                 fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+            log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
         except Exception as e:
             _log_cycle(stage="error", error=repr(e))
+            log(f"[loop] ERRORE ciclo: {e!r}")
         if once:
             break
         time.sleep(interval)

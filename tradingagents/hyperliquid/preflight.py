@@ -44,10 +44,11 @@ def run_all(cfg):
         st = c.clearinghouse_state(cfg.wallet)
         assert isinstance(st.get("assetPositions"), list), st
 
-    def _watchlist():
-        coin = os.getenv("HL_WATCHLIST", "BTC").split(",")[0].strip().upper()
-        mids = c.all_mids()
-        assert coin in mids, f"{coin} assente da all_mids ({len(mids)} mercati)"
+    def _universe():
+        from . import registry
+        _, n_perp, n_spot = registry.universe(c)
+        assert n_perp > 100 and n_spot > 50, f"universo troppo piccolo: {n_perp}/{n_spot}"
+        assert len(c.all_mids()) >= n_perp, "all_mids incompleto vs registry"
 
     def _router():
         out = _post_json(f"{cfg.router_url}/chat/completions",
@@ -63,7 +64,7 @@ def run_all(cfg):
 
     check(f"HyPaper su {cfg.hypaper_url}", _hypaper)
     check(f"wallet '{cfg.wallet}' leggibile", _wallet)
-    check("mercato watchlist in all_mids", _watchlist)
+    check(f"universo dinamico raggiungibile", _universe)
     check(f"9router {cfg.router_url} modello {cfg.model}", _router)
     check(f"store SQLite scrivibile ({store.DB})", _store)
 

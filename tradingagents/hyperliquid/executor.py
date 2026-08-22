@@ -143,6 +143,20 @@ class HyperliquidExecutor:
         self._log(out)
         return out
 
+    def cancel_order(self, coin, oid):
+        """Cancella un ordine resting (es. stop orfano) per asset index."""
+        idx, _ = self.c.asset_index(coin)
+        resp = self.c._post("/exchange", {
+            "wallet": self.cfg.wallet,
+            "action": {"type": "cancel", "cancels": [{"a": idx, "o": int(oid)}]},
+        })
+        st = ((resp.get("response", {}) or {}).get("data", {}) or {}).get("statuses", [])
+        ok = any("success" in str(s) for s in st)
+        out = {"coin": coin, "oid": oid,
+               "status": "canceled" if ok else "error", "raw": st}
+        self._log(out)
+        return out
+
     @staticmethod
     def _log(row):
         os.makedirs(os.path.dirname(TRADES_LOG), exist_ok=True)

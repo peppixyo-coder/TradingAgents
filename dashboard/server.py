@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import time
 from collections import deque
 
@@ -49,15 +50,30 @@ class Agg:
         self.c = HyPaperClient(self.cfg.hypaper_url)
         self.watchlist = [x.strip().upper() for x in
                           os.getenv("HL_WATCHLIST", "BTC").split(",") if x.strip()]
+        self._mkt, self._mkt_t = {}, 0.0    # dump screener.json del loop
         self.mids = {}
         self.hl_ws_ok = False
         self.last_rest_ok = 0.0          # ultimo successo mirror (HyPaper/HL REST)
         self.cycles = []                 # cycle_report.json parsato
         self.equity = deque(maxlen=30000)   # [(ts_s, equity)]
+        # serie storica persistita (il bot non scrive equity nei cicli)
+        _eqp = os.path.join(os.path.dirname(store.DB), "equity.jsonl")
+        if os.path.exists(_eqp):
+            with open(_eqp, encoding="utf-8") as _fh:
+                for _ln in _fh:
+                    try:
+                        _t, _v = _ln.strip().split(",")
+                        self.equity.append((float(_t), float(_v)))
+                    except ValueError:
+                        pass
         self.day_key = time.strftime("%Y-%m-%d", time.gmtime())
         self.day_start_eq = None
         self.last_kpis = {}
         self.ctxs_cache = ([], 0.0)      # (universe, ts)
+        self._pos_ch = None              # ponytail: cache clearinghouseState
+        self._pos_t = 0.0                #   (HyPaper /info ha rate limit; senza,
+        self._eq_v = None                #   fast_loop+slow_loop fanno ~80 req/min
+        self._eq_t = 0.0                 #   e prendono 429 a raffica)
         self.clients = set()
 
     # ---------- sorgenti ----------
@@ -105,7 +121,18 @@ class Agg:
                 self.equity.append((t, v))
 
     def positions_live(self):
-        ch = self.rest({"type": "clearinghouseState", "user": self.cfg.wallet})
+        # ponytail: sotto rate-limit serve l'ultimo snapshot buono (max 5 min
+        # stantio); upgrade = cache persistente su disco.
+        try:
+            if time.time() - self._pos_t > 30 or self._pos_ch is None:
+                self._pos_ch = self.rest(
+                    {"type": "clearinghouseState", "user": self.cfg.wallet})
+                self._pos_t = time.time()
+        except Exception as e:
+            if self._pos_ch is None or time.time() - self._pos_t > 300:
+                raise
+            print(f"[positions] rate-limit, uso cache stantia: {e}", flush=True)
+        ch = self._pos_ch
         now = time.time()
         out = []
         intents_open = {i["coin"]: dict(i) for i in store.intents_open()}
@@ -154,10 +181,14 @@ class Agg:
             self.ctxs_cache = (uni, time.time())
         return uni
 
-    # ---------- derivati ----------
+    def equity_cached(self, ttl=30):
+        if self._eq_v is None or time.time() - self._eq_t > ttl:
+            self._eq_v = equity(self.c, self.cfg)
+            self._eq_t = time.time()
+        return self._eq_v
 
     def kpis(self, trades):
-        eq_now = equity(self.c, self.cfg)
+        eq_now = self.equity_cached()
         day = time.strftime("%Y-%m-%d", time.gmtime())
         if self.day_key != day or self.day_start_eq is None:
             self.day_key = day
@@ -231,6 +262,22 @@ class Agg:
             "cycleNum": len(scans),
         }
 
+    def market_file(self, ttl=1800):
+        """Dump screener del loop (state/screener.json), ricaricato ogni 30 min."""
+        if time.time() - self._mkt_t > ttl:
+            p = os.path.join(os.path.dirname(store.DB), "screener.json")
+            try:
+                with open(p) as fh:
+                    self._mkt = json.load(fh)
+            except Exception:
+                self._mkt = {}
+            self._mkt_t = time.time()
+        return self._mkt
+
+    def watched(self):
+        rows = self.market_file().get("rows")
+        return [r["coin"] for r in rows] if rows else self.watchlist
+
     def market_rows(self):
         pos_coins = {p["coin"].split("-")[0] for p in self.positions_live()}
         last_z = {}
@@ -239,6 +286,24 @@ class Agg:
                 last_z[r["coin"]] = r["ofi_z"]
         trig = {r["coin"] for r in self.cycles
                 if r.get("llm_side") and (_parse_ts(r["ts"]) or 0) > time.time() - 3600}
+        mf = self.market_file()
+        rows_src = mf.get("rows")
+        if rows_src:
+            trig = set(mf.get("triggered") or ())
+            out = []
+            for r in rows_src:
+                fund = float(r["funding"] or 0)
+                out.append({
+                    "coin": r["coin"], "mark": r["mid"],
+                    "chg24h": r.get("chg24h"), "vol24h": r["vol24h"],
+                    "oi": r["oi"], "funding": fund * 24 * 100,
+                    "fundingAnn": fund * 24 * 365 * 100,
+                    "spread": r.get("spread_bps"), "ofiZ": r.get("ofi_z"),
+                    "rsi": r.get("rsi"), "macdH": r.get("macd_h"),
+                    "volX": r.get("vol_x"), "triggered": r["coin"] in trig,
+                    "inPos": r["coin"] in pos_coins, "sigma": 1.0,
+                })
+            return out
         rows = []
         sigma = 1.0  # soglia visuale: z e' gia' standardizzato dal modulo signal
         for u in self.universe()[:40]:
@@ -268,7 +333,7 @@ class Agg:
         last_scan = scans[-1] if scans else None
         avg_dur = (sum(r.get("dur_s") or 0 for r in today) / len(today)) if today else None
         return {
-            "watchlist": self.watchlist,
+            "watchlist": self.watched(),
             "scansToday": len(today),
             "triggered": triggered,
             "ratioText": f"{len(triggered)} trigger su {len(today)} scan",
@@ -331,7 +396,7 @@ class Agg:
             fh.seek(0, 2)
             size = fh.tell()
             fh.seek(max(0, size - 262144))
-        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
         return lines[-n:]
 
     def snapshot_slow(self):
@@ -350,7 +415,7 @@ class Agg:
             "logs": self.logs_tail(),
             "cfg": {
                 "mode": self.cfg.trading_mode, "wallet": self.cfg.wallet,
-                "watchlist": self.watchlist, "model": self.cfg.model,
+                "watchlist": self.watched(), "model": self.cfg.model,
                 "base_frac": self.cfg.base_frac, "lev_cap": self.cfg.lev_cap,
                 "max_concurrent": self.cfg.max_concurrent,
                 "daily_dd": self.cfg.daily_dd, "weekly_dd": self.cfg.weekly_dd,
@@ -455,8 +520,8 @@ async def broadcast(payload):
 async def fast_loop():
     while True:
         try:
-            positions = agg.positions_live()
-            eq_now = equity(agg.c, agg.cfg)
+            positions, eq_now = await asyncio.to_thread(
+                lambda: (agg.positions_live(), agg.equity_cached()))
             k = agg.last_kpis
             ds = k.get("dayStart")
             await broadcast({"t": "tick", "ts": int(time.time() * 1000),
@@ -465,18 +530,26 @@ async def fast_loop():
                              "dayPnl": eq_now - ds if ds else 0,
                              "dayPnlPct": (eq_now / ds - 1) * 100 if ds else 0,
                              "unrealized": sum(p["uPnL"] for p in positions)})
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[fast_loop] {type(e).__name__}: {e}", flush=True)
         await asyncio.sleep(1)
 
 
 async def slow_loop():
     while True:
         try:
-            await broadcast(agg.snapshot_slow())
+            await broadcast(await asyncio.to_thread(agg.snapshot_slow))
+            now = time.time()
+            v = (agg.last_kpis or {}).get("equity")
+            prev_t = agg.equity[-1][0] if agg.equity else 0
+            if v and now - prev_t >= 60:
+                agg.equity.append((now, float(v)))
+                with open(os.path.join(os.path.dirname(store.DB), "equity.jsonl"),
+                          "a", encoding="utf-8") as fh:
+                    fh.write(f"{now},{v}\n")
         except Exception:
-            pass
-        await asyncio.sleep(5)
+            import traceback
+            print("[slow_loop] " + traceback.format_exc(), flush=True)
 
 
 @app.websocket("/ws")
@@ -505,11 +578,17 @@ async def ws_fallback(ws: WebSocket):
 
 @app.on_event("startup")
 async def startup():
-    agg.load_cycles()
-    agg.backfill_equity()
+    # ponytail: load_cycles/backfill_equity qui possono bloccare il bind di
+    # uvicorn su un wedge FUSE; snapshot_slow li richiama comunque ogni 5s.
+    print("[startup] begin", flush=True)
     asyncio.create_task(agg.hl_ws_loop())
     asyncio.create_task(fast_loop())
     asyncio.create_task(slow_loop())
+    print("[startup] tasks created", flush=True)
+
+
+import faulthandler
+faulthandler.register(signal.SIGUSR1)
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

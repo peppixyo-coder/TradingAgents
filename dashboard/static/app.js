@@ -42,6 +42,8 @@ function wsConnect() {
 function onTick(m) {
   S.mids = m.mids; S.positions = m.positions;
   setTxt("k-upnl", usd(m.unrealized));
+  $("#k-upnl").className = "mono " + cls(m.unrealized);
+  setTxt("k-upnl-n", `${(m.positions || []).length} pos aperte`);
   renderPositions();
   if (S.tab === "market") markLiveRows();
   const ap = S.charts.ap;
@@ -79,9 +81,11 @@ function renderHeaderMeta() {
 }
 function renderKpiStatics() {
   const k = S.k;
+  setTxt("k-equity", usd(k.equity));
   const d = k.dayPnlPct || 0;
   setTxt("k-eqdelta", pct(d) + " oggi");
-  $("#k-eqdelta").className = "mono " + cls(d);
+  setTxt("k-upnl", usd(k.unrealized));
+  setTxt("k-upnl-n", `${(S.positions || []).length} pos aperte`);
   setTxt("k-rpnl", usd(k.realizedToday));
   $("#k-rpnl").className = "mono " + cls(k.realizedToday);
   setTxt("k-fees", "fee tot " + usd(k.feesTot));
@@ -90,8 +94,9 @@ function renderKpiStatics() {
   setTxt("k-pf", num(k.profitFactor, 2));
   $("#k-pf").className = "mono " + (k.profitFactor >= 1 ? "pos" : "neg");
   setTxt("k-avl", `avg ${usd(k.avgWin)} / −${usd(Math.abs(k.avgLoss || 0))}`);
-  setTxt("k-dd", k.maxDD == null ? "—" : "−" + k.maxDD.toFixed(1) + "%");
-  setTxt("k-ddnow", "ora −" + (k.ddNow || 0).toFixed(1) + "% · limite −10%");
+  const fdd = v => v == null ? "—" : "−" + (v < 1 ? v.toFixed(2) : Math.round(v)) + "%";
+  setTxt("k-dd", fdd(k.maxDD));
+  setTxt("k-ddnow", `ora ${fdd(k.ddNow)} · limite −10%`);
   $("#dd-fill").style.width = Math.min((k.ddNow || 0) / 10 * 100, 100) + "%";
   drawSpark();
 }

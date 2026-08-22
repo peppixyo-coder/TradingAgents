@@ -203,7 +203,8 @@ class Agg:
         realized_today = sum(t["pnl"] for t in closed
                              if time.strftime("%Y-%m-%d", time.gmtime(
                                  _parse_ts(t["tsClose"]) or 0)) == day)
-        unreal = sum(p["uPnL"] for p in self.positions_live())
+        pl = self.positions_live()
+        unreal = sum(p["uPnL"] for p in pl)
 
         series = list(self.equity) + [(time.time(), eq_now)]
         peak, max_dd, dd_at_end = series[0][1], 0.0, 0.0
@@ -240,9 +241,9 @@ class Agg:
             "dayStart": self.day_start_eq,
             "dayPnl": eq_now - self.day_start_eq,
             "dayPnlPct": (eq_now / self.day_start_eq - 1) * 100 if self.day_start_eq else 0,
-            "realizedToday": realized_today,
-            "realizedTot": tot_pnl, "feesTot": sum(t.get("fee") or 0 for t in trades),
             "unrealized": unreal,
+            "marginUsed": sum(p["szi"] * p["mark"] / max(1, p["lev"]) for p in pl),
+            "levTot": sum(p["szi"] * p["mark"] for p in pl) / eq_now if eq_now else 0,
             "winRate": len(wins) / len(closed) * 100 if closed else None,
             "wins": len(wins), "losses": len(losses), "closes": len(closed),
             "profitFactor": gp / gl if gl > 0 else (None if gp == 0 else 99.0),
@@ -449,7 +450,6 @@ class Agg:
                 "mode": self.cfg.trading_mode, "wallet": self.cfg.wallet,
                 "watchlist": self.watched(), "model": self.cfg.model,
                 "base_frac": self.cfg.base_frac, "lev_cap": self.cfg.lev_cap,
-                "max_concurrent": self.cfg.max_concurrent,
                 "daily_dd": self.cfg.daily_dd, "weekly_dd": self.cfg.weekly_dd,
                 "atr_stop_mult": self.cfg.atr_stop_mult, "signal_z_min": self.cfg.signal_z_min,
                 "scanIntervalS": int(os.getenv("HL_SCAN_INTERVAL", "900")),

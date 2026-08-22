@@ -186,15 +186,13 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     eq = equity(c, cfg)
     vetoes = risk.check_dd_veto(cfg, eq)
     ch_now = c.clearinghouse_state(cfg.wallet)
-    n_open = sum(1 for p in ch_now["assetPositions"]
-                 if float(p["position"]["szi"]) != 0)
-    plan = risk.size_order(cfg, eq, n_open, mid, sigma, atr, conv)
+    plan = risk.size_order(cfg, eq, mid, sigma, atr, conv)
     stop_px = mid - plan["stop_dist"] if llm_side == "long" else mid + plan["stop_dist"]
     corr_n = scanner.correlated_open_count(
         [x["c"] for x in d1], [i["coin"] for i in store.intents_open()], coin,
         lambda oc: c.candles_cached(oc, "1d", 90 * 24 * 3600 * 1000))
     pv = risk.portfolio_veto(cfg, eq, coin, plan["notional"],
-                             ch_now["assetPositions"], corr_n)
+                             ch_now["assetPositions"], corr_n, plan["leverage"])
     if vetoes or plan["veto"] or pv:
         return done(False, f"veto: {vetoes or plan['veto'] or pv}", {"plan": plan})
 

@@ -74,6 +74,23 @@ v = risk.portfolio_veto(cfg, eq, "PEPE", 100, [], 3)
 assert any("CORR_CLUSTER" in x for x in v), v       # 3 correlati + 1 > 3
 assert risk.portfolio_veto(cfg, 0, "BTC", 100, [], 0) == ["EQUITY<=0"]
 
+# ---- nessun cap assoluto posizioni + margine ----
+c2 = type("C", (), {"lev_cap": 3.0, "base_frac": 0.10, "min_notional": 10.0,
+                    "atr_stop_mult": 2.0})()
+plan = risk.size_order(c2, 10_000, 100.0, 0.02, 50.0, 1.0)
+assert plan["veto"] is None, plan   # la firma non accetta piu' un conteggio posizioni
+levpos = lambda coin, val, szi, lev: {
+    "position": {"coin": coin, "positionValue": val, "szi": szi,
+                 "leverage": {"value": lev}}}
+v = risk.portfolio_veto(cfg, 1_000, "DOGE", 100,
+                        [levpos("A", 800, 1, 2), levpos("B", 800, 1, 2),
+                         levpos("C", 800, 1, 2)], 0)
+assert any("INSUFFICIENT_MARGIN" in x for x in v), v
+# stessa struttura a leva 20x: margine 120, free 880 >= notional 500 => nessun veto
+assert risk.portfolio_veto(cfg, 1_000, "DOGE", 100,
+                           [levpos("A", 800, 1, 20), levpos("B", 800, 1, 20),
+                            levpos("C", 800, 1, 20)], 0) == []
+
 # ---- ctx_deltas ----
 prev = {"ETH": {"funding": 0.0001, "oi": 100.0}}
 rows = [{"coin": "ETH", "funding": 0.0002, "oi": 150.0},

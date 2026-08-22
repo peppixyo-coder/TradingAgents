@@ -98,6 +98,11 @@ function renderKpiStatics() {
   setTxt("k-dd", fdd(k.maxDD));
   setTxt("k-ddnow", `ora ${fdd(k.ddNow)} · limite −10%`);
   $("#dd-fill").style.width = Math.min((k.ddNow || 0) / 10 * 100, 100) + "%";
+  setTxt("k-margin", usd(k.marginUsed || 0));
+  const lev = k.levTot || 0;
+  $("#k-lev").textContent = `${lev.toFixed(2)}x / 3.00x max`;
+  $("#lev-fill").style.width = Math.min(lev / 3 * 100, 100) + "%";
+  $("#lev-fill").className = lev >= 2.5 ? "warn" : "";
   drawSpark();
 }
 
@@ -245,7 +250,7 @@ function renderRisk() {
     ["Perdite consecutive", `${k.consecLosses || 0} (record ${k.consecRecord || 0})`],
     ["Veto rate", (k.vetoRate || 0).toFixed(0) + "%"],
     ["Lev cap", c.lev_cap + "x"], ["Frac base", (c.base_frac * 100) + "%"],
-    ["Max posizioni", c.max_concurrent], ["DD giornaliero", (c.daily_dd * 100) + "%"],
+    ["Margin used", usd(k.marginUsed || 0)], ["DD giornaliero", (c.daily_dd * 100) + "%"],
   ]);
 }
 const kv = pairs => pairs.map(([l, v]) => `<label>${l}</label><b>${v}</b>`).join("");
@@ -498,7 +503,7 @@ function renderSystem() {
   $("#sys-cfg").innerHTML = kv([
     ["Modalità", c.mode], ["Modello", c.model], ["Wallet", c.wallet],
     ["Watchlist", (c.watchlist || []).join(", ")], ["Frac base", c.base_frac],
-    ["Lev cap", c.lev_cap], ["Max conc.", c.max_concurrent],
+    ["Lev cap", c.lev_cap + "x"],
     ["DD g/sett", `${c.daily_dd} / ${c.weekly_dd}`], ["Stop ATR×", c.atr_stop_mult],
     ["z min", c.signal_z_min], ["Scan", c.scanIntervalS + "s"], ["WS collect", c.wsCollectS + "s"]]);
   const errs = S.scans.filter(r => r.stage === "error");

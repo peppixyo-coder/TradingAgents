@@ -123,7 +123,7 @@ def main():
     ch = c.clearinghouse_state(cfg.wallet)
     open_pos = sum(1 for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0)
     vetoes = risk.check_dd_veto(cfg, bal)  # equity = cash HyPaper; unrealized ignorato nello spike
-    plan = risk.size_order(cfg, bal, open_pos, mid, sigma, atr, max(conv, 0.1) if force else conv)
+    plan = risk.size_order(cfg, bal, mid, sigma, atr, max(conv, 0.1) if force else conv)
     stop_px = mid - plan["stop_dist"] if llm_side == "long" else mid + plan["stop_dist"]
     print(f"balance=${bal:,.2f} posizioni_aperte={open_pos} veto_dd={vetoes or 'nessuno'}")
     print(f"piano: {plan}")

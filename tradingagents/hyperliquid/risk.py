@@ -34,11 +34,9 @@ def check_dd_veto(cfg, equity_now):
     return reasons
 
 
-def size_order(cfg, balance, open_positions, mid, sigma, atr, conviction):
+def size_order(cfg, balance, mid, sigma, atr, conviction):
     """Piano d'ordine dimensionato. veto non-Nullo => nessun ordine."""
     vetoes = []
-    if open_positions >= cfg.max_concurrent:
-        vetoes.append("MAX_CONCURRENT")
     garch = max(0.25, min(2.0, 0.58 / sigma)) if sigma and sigma > 0 else 1.0
     notional = balance * cfg.base_frac * garch * conviction
     if notional < cfg.min_notional:
@@ -70,18 +68,24 @@ def _pos_value(p):
     return abs(float(pos["szi"])) * float(pos.get("entryPx") or 0)
 
 
-def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
+def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count, new_lev=1):
     """Limiti portafoglio spec multi-asset: <=10% equity/asset, leva totale
-    <= lev_cap, cluster correlati <= CORR_MAX_CLUSTER. Motivi (vuota = ok)."""
+    <= lev_cap, margine libero sufficiente, cluster correlati <= CORR_MAX_CLUSTER.
+    Motivi (vuota = ok)."""
     reasons = []
     if eq <= 0:
         return ["EQUITY<=0"]
-    expo = {p["position"]["coin"]: _pos_value(p)
-            for p in asset_positions if float(p["position"]["szi"]) != 0}
+    open_ps = [p for p in asset_positions if float(p["position"]["szi"]) != 0]
+    expo = {p["position"]["coin"]: _pos_value(p) for p in open_ps}
     if (expo.get(coin, 0.0) + notional) / eq > MAX_ASSET_FRAC:
         reasons.append(f"ASSET_CAP>{MAX_ASSET_FRAC:.0%}")
     if (sum(expo.values()) + notional) / eq > cfg.lev_cap:
         reasons.append(f"LEV_TOT>{cfg.lev_cap}x")
+    margin_used = sum(_pos_value(p) / max(1.0, float(
+        p["position"].get("leverage", {}).get("value", 1))) for p in open_ps)
+    margin_free = eq - margin_used
+    if margin_free * new_lev < notional:
+        reasons.append(f"INSUFFICIENT_MARGIN free={margin_free:.0f}")
     if corr_count + 1 > CORR_MAX_CLUSTER:
         reasons.append(f"CORR_CLUSTER {corr_count}+1>{CORR_MAX_CLUSTER}")
     return reasons

@@ -23,7 +23,6 @@ class HLConfig:
     # --- contratto RiskManager ratificato ---
     base_frac: float = 0.10            # esposizione base per trade sul balance
     lev_cap: float = 3.0               # leva totale max
-    max_concurrent: int = 5            # posizioni aperte max (hard-veto)
     daily_dd: float = -0.05            # DD giornaliero -> hard-veto nuovi ingressi
     weekly_dd: float = -0.10           # DD settimanale -> stop 24h (loop concern)
     min_notional: float = 10.0         # sotto: skip trade, mai forzato

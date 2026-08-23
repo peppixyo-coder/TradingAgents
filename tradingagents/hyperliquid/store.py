@@ -108,3 +108,30 @@ def intent_close(intent_id, reason):
         conn.execute("UPDATE intents SET status='closed', closed_ts=?, close_reason=? "
                      "WHERE id=?",
                      (time.strftime("%Y-%m-%dT%H:%M:%S%z"), reason, intent_id))
+
+
+_last_backup_ts = 0.0
+
+
+def backup_if_due(period_s=3600, keep=24):
+    """Backup orario consistente di bot.db (API sqlite backup) in state/backups/."""
+    global _last_backup_ts
+    if time.time() - _last_backup_ts < period_s:
+        return None
+    _last_backup_ts = time.time()
+    bdir = os.path.join(os.path.dirname(DB), "backups")
+    os.makedirs(bdir, exist_ok=True)
+    dst = os.path.join(bdir, time.strftime("bot_%Y%m%d_%H%M%S.db"))
+    tgt = sqlite3.connect(dst)
+    try:
+        with connect() as conn:
+            conn.backup(tgt)
+        tgt.commit()
+    finally:
+        tgt.close()
+    for old in sorted(f for f in os.listdir(bdir) if f.startswith("bot_"))[:-keep]:
+        try:
+            os.remove(os.path.join(bdir, old))
+        except OSError:
+            pass
+    return dst

@@ -82,13 +82,19 @@ def pearson(a, b):
     return num / (da * db) if da > 0 and db > 0 else 0.0
 
 
+def _rets(px):
+    """Rendimenti semplici; i punti con prezzo <=0 scartano la coppia adiacente."""
+    return [b / a - 1 for a, b in zip(px, px[1:]) if a > 0 and b > 0]
+
+
 def correlated_open_count(d1_closes_coin, open_coins, coin, candles_fn):
-    """Posizioni aperte correlate (|rho| > 0.7, close 30d) col candidato."""
+    """Posizioni aperte correlate (|rho| > soglia sui RENDIMENTI 30d)."""
     n = 0
+    ra = _rets(d1_closes_coin)
     for other in open_coins:
         if other == coin:
             continue
-        if pearson(d1_closes_coin, [x["c"] for x in candles_fn(other)]) > CORR_THRESHOLD:
+        if pearson(ra, _rets([x["c"] for x in candles_fn(other)])) > CORR_THRESHOLD:
             n += 1
     return n
 

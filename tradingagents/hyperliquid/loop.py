@@ -15,6 +15,7 @@ Run: python -m tradingagents.hyperliquid.loop [--once] [--no-preflight] [--close
 """
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -24,6 +25,8 @@ from .config import load
 from .data import HyPaperClient, collect_trades_multi, fng, rss_headlines
 from .executor import HyperliquidExecutor
 
+
+WHALE_MIN_USD = 10_000     # print taker minimo ($): sotto, rumore nel prompt PM
 
 def load_dotenv(path=None):
     """Minimo loader stdlib: KEY=VAL, #commenti; non sovrascrive l'ambiente."""
@@ -50,8 +53,10 @@ def log(msg):
     line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {msg}"
     print(line)
     try:
-        with open(os.path.join(os.path.dirname(store.DB), "bot.log"), "a",
-                  encoding="utf-8") as fh:
+        p = os.path.join(os.path.dirname(store.DB), "bot.log")
+        if os.path.exists(p) and os.path.getsize(p) > 5 * 1024 * 1024:
+            os.replace(p, p + ".1")     # rotazione: un solo archivio da 5MB
+        with open(p, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError:
         pass
@@ -73,7 +78,7 @@ def _has_live_stop(c, cfg, coin):
     try:
         orders = c._post("/info", {"type": "frontendOpenOrders", "user": cfg.wallet})
         return any(o.get("reduceOnly") and o.get("triggerPx")
-                   and str(o.get("coin", "")).startswith(coin) for o in orders)
+                   and str(o.get("coin", "")) == coin for o in orders)
     except Exception as e:  # endpoint giu' -> non blocchiare il loop; ri-attach solo se None
         log(f"[reconcile] frontendOpenOrders non disponibile: {e}")
         return None
@@ -94,11 +99,12 @@ def attach_stop(ex, intent):
 def reconcile(c, cfg, ex):
     """Riallinea intenti <-> realta': posizioni scomparse si archiviano,
     stop mancanti si ri-attachano. Idempotente, gira a ogni iterazione."""
-    positions = {}
+    positions, entries = {}, {}
     for p in c.clearinghouse_state(cfg.wallet)["assetPositions"]:
         pos = p["position"]
         if float(pos["szi"]) != 0:
             positions[pos["coin"]] = float(pos["szi"])
+            entries[pos["coin"]] = float(pos.get("entryPx") or 0)
     for it in store.intents_open():
         if it["coin"] not in positions:
             store.intent_close(it["id"], "position-gone")
@@ -123,6 +129,23 @@ def reconcile(c, cfg, ex):
         if live is False:
             log(f"[reconcile] {it['coin']}: stop mancante, ri-attach")
             attach_stop(ex, it)
+    # adotta posizioni senza intento (es. db ricostruito): mai una posizione senza stop
+    owned = {i["coin"] for i in store.intents_open()}
+    for coin, szi in positions.items():
+        if coin in owned:
+            continue
+        side = "long" if szi > 0 else "short"
+        mid_o = float(c.all_mids()[coin])
+        h1 = c.candles_cached(coin, "1h", 7 * 24 * 3600 * 1000)
+        atr = signal.atr14(h1) or 0
+        dist = cfg.atr_stop_mult * atr if atr > 0 else mid_o * 0.02
+        stop_px = round(mid_o - dist if side == "long" else mid_o + dist, 6)
+        iid = store.intent_open(coin, side, abs(szi),
+                                entries.get(coin) or mid_o, stop_px)
+        attach_stop(ex, {"id": iid, "coin": coin, "side": side,
+                         "qty": abs(szi), "stop_px": stop_px})
+        log(f"[reconcile] {coin}: posizione orfana adottata -> intent #{iid} "
+            f"+ stop {stop_px:.6g}")
 
 
 def gather(cfg, c, coin):
@@ -153,7 +176,9 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     heads = pre["heads"]
 
     # ---- segnale ----
-    z = signal.ofi_z(signal.ofi_fraction(trades))
+    z = pre.get("ofi_z") if pre else None
+    if z is None:                    # path legacy gather(): ricalcolo pseudo-z
+        z = signal.ofi_z(signal.ofi_fraction(trades))
     conv = signal.conviction_from_z(z)
     sigma = signal.sigma_ann([x["c"] for x in h1])
     atr = signal.atr14(h1)
@@ -180,8 +205,10 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     margin_free = eq - risk.margin_used_of(ch_pre["assetPositions"])
 
     # ---- grafo agenti ----
-    whales = sorted((t["px"] * t["sz"] for t in trades), reverse=True)
-    whale_line = (f"print più grande: ${whales[0]:,.0f}\n" if whales else "nessun print\n")
+    whales = sorted((t["px"] * t["sz"] for t in trades
+                     if t["px"] * t["sz"] >= WHALE_MIN_USD), reverse=True)
+    whale_line = (f"print più grande: ${whales[0]:,.0f}\n"
+                  if whales else "nessun print rilevante\n")
     blob = (
         f"Asset: {coin}-PERP Hyperliquid\nPrezzo: ${mid:,.1f} (24h {day_chg:+.2f}%)\n"
         f"Funding (ann.): {float(ctx['funding']) * 24 * 365 * 100:+.2f}%  "
@@ -235,6 +262,12 @@ def run_cycle(cfg, c, ex, coin, pre=None):
                         {"plan": plan})
         plan = dict(plan, notional=round(mx, 2), qty=round(mx / mid, 5))
 
+    _, uni = c.asset_index(coin)
+    step = 10 ** -int(uni.get("szDecimals", 5))
+    qty_lot = math.floor(plan["qty"] / step + 1e-12) * step   # floor al lotto exchange
+    if qty_lot <= 0:
+        return done(False, f"QTY_LOT_ZERO qty={plan['qty']} step={step}")
+    plan = dict(plan, qty=qty_lot, notional=round(qty_lot * mid, 2))
     # ---- esecuzione + stop nativo + persistenza intento ----
     ex.set_leverage(coin, plan["leverage"])
     fill = ex.place_market(coin, llm_side, plan["qty"], mid)
@@ -283,10 +316,13 @@ def close_position(c, cfg, ex, it):
     qty = abs(float(pos["szi"]))
     fill = ex.place_market(it["coin"], side, qty, float(c.all_mids()[it["coin"]]),
                            reduce_only=True)
-    ok = fill["status"] == "filled"
-    store.intent_close(it["id"], "chiusura-manuale" if ok
-                       else f"chiusura-fallita:{fill['status']}")
-    log(f"[close] {it['coin']} {qty} {side} -> {fill['status']} @ {fill.get('avg_px')}")
+    if fill["status"] != "filled":
+        # archivio solo su conferma: fallito => intento resta aperto, il ciclo riprova
+        log(f"[close] ATTENZIONE {it['coin']}: chiusura fallita "
+            f"({fill['status']}); intento #{it['id']} resta aperto")
+        return
+    store.intent_close(it["id"], "chiusura-manuale")
+    log(f"[close] {it['coin']} {qty} {side} -> filled @ {fill.get('avg_px')}")
 
 
 def _write_screener_json(rows, funnel, triggered=()):
@@ -361,7 +397,8 @@ def main(argv=None):
                        "h4": c.candles(r["coin"], "4h", 30 * 24 * 3600 * 1000),
                        "d1": d1_map[r["coin"]],
                        "trades": flow.get(r["coin"], []),
-                       "fng": (fng_v, fng_c), "heads": heads}
+                       "fng": (fng_v, fng_c), "heads": heads,
+                       "ofi_z": r["ofi_z"]}
                 res = run_cycle(cfg, c, ex, r["coin"], pre=pre)
                 tag = "TRADE" if res["executed"] else "skip"
                 log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
@@ -369,6 +406,7 @@ def main(argv=None):
                     f"({time.time() - t0:.0f}s)")
             with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
                 fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+            store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
         except Exception as e:
             _log_cycle(stage="error", error=repr(e))

@@ -19,7 +19,6 @@ from collections import deque
 import requests
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -479,8 +478,6 @@ class Agg:
 
 agg = Agg()
 app = FastAPI(title="HL Paper Dashboard", docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
 API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 
 

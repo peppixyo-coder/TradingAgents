@@ -44,7 +44,7 @@ def size_order(cfg, balance, mid, sigma, atr, conviction,
         vetoes.append(f"MIN_NOTIONAL ({notional:.2f} < {cfg.min_notional})")
 
     qty = round(notional / mid, 5) if mid > 0 else 0.0
-    stop_dist = cfg.atr_stop_mult * atr if atr and atr > 0 else notional * 0.02
+    stop_dist = cfg.atr_stop_mult * atr if atr and atr > 0 else mid * 0.02
     # Leva del PM: nessun default nel codice; se manca -> veto (skip ciclo).
     if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or float(leverage) < 1:
         vetoes.append("LEVERAGE_MISSING (il PM non ha scelto la leva)")
@@ -104,7 +104,6 @@ def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
         advisory = {"why": f"LEV_TOT {(cur + notional) / eq:.2f}x>{cfg.lev_cap}x",
                     "max_notional": round(cfg.lev_cap * eq - cur, 2)}
     margin_free = eq - margin_used_of(asset_positions)
-    new_lev = notional / max(eq * cfg.base_frac, 1e-9)  # leva implicita del nuovo tratto
     if margin_free < notional:
         reasons.append(f"INSUFFICIENT_MARGIN free={margin_free:.0f}")
     if corr_count + 1 > CORR_MAX_CLUSTER:

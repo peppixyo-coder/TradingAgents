@@ -82,7 +82,8 @@ def build_report():
     peak, max_dd = series[0], 0.0
     for v in series:
         peak = max(peak, v)
-        max_dd = max(max_dd, (peak - v) / peak)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - v) / peak)
 
     first_ts = next((r["ts"] for r in recs if _parse_ts(r["ts"])), None)
     if first_ts:

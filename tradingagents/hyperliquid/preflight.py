@@ -1,11 +1,11 @@
-"""Preflight: 5 gate che devono passare prima che il loop parta.
+"""Preflight: 6 gate che devono passare prima che il loop parta.
 
 Run: python -m tradingagents.hyperliquid.preflight   (exit 0 ok / 1 fallito)
 Ogni check e' la chiamata REALE che il loop fara' in produzione: niente mock.
 """
 import json
 import os
-import sys
+import shutil
 import urllib.request
 
 from . import store
@@ -62,11 +62,17 @@ def run_all(cfg):
         store.kv_set("preflight", "ok")
         assert store.kv_get("preflight") == "ok"
 
+    def _disk():
+        d = os.path.dirname(store.DB) or "."
+        free = shutil.disk_usage(d).free
+        assert free >= 500 * 1024 * 1024, f"liberi solo {free / 1e6:.0f}MB"
+
     check(f"HyPaper su {cfg.hypaper_url}", _hypaper)
     check(f"wallet '{cfg.wallet}' leggibile", _wallet)
     check(f"universo dinamico raggiungibile", _universe)
     check(f"9router {cfg.router_url} modello {cfg.model}", _router)
     check(f"store SQLite scrivibile ({store.DB})", _store)
+    check(f"spazio disco su {os.path.dirname(store.DB) or '.'} >= 500MB", _disk)
 
     ok = True
     for name, passed, err in checks:
@@ -75,7 +81,7 @@ def run_all(cfg):
     if not ok:
         print("Preflight FALLITO: il loop non parte.")
         sys.exit(1)
-    print("Preflight OK: tutti i 5 gate passati.")
+    print(f"Preflight OK: tutti i {len(checks)} gate passati.")
 
 
 if __name__ == "__main__":

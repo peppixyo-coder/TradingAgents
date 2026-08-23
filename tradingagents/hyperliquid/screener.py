@@ -66,7 +66,7 @@ def screene(c, mids):
     rows = [r for r in rows if (age_days(c, r["coin"]) or 0) >= MIN_AGE_DAYS]
     funnel[f"eta>={MIN_AGE_DAYS}g"] = len(rows)
 
-    passed = []
+    passed, spread_unknown = [], 0
     for r in rows:
         try:
             book = c._post("/info", {"type": "l2Book", "coin": r["coin"]})["levels"]
@@ -74,8 +74,15 @@ def screene(c, mids):
             r["spread_bps"] = (ask - bid) / ((ask + bid) / 2) * 1e4
         except Exception:
             r["spread_bps"] = None
-        if r["spread_bps"] is None or r["spread_bps"] <= MAX_SPREAD_BPS:
+        if r["spread_bps"] is None:
+            # fail-closed: spread ignoto => il coin resta fuori (boundary di fiducia
+            # a monte del sizing), mai passato per default.
+            spread_unknown += 1
+            continue
+        if r["spread_bps"] <= MAX_SPREAD_BPS:
             passed.append(r)
+    if spread_unknown:
+        funnel["spread_sconosciuto_fuori"] = spread_unknown
     funnel[f"spread<={MAX_SPREAD_BPS:.0f}bps"] = len(passed)
 
     for r in passed:

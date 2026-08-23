@@ -22,12 +22,16 @@ class ExecutorError(RuntimeError):
     pass
 
 
-def _fmt_px(p):
-    """Prezzo HL: massimo 5 cifre significative."""
+def _fmt_px(p, sz_decimals=0):
+    """Prezzo HL: max 5 cifre significative E max 6 - szDecimals decimali."""
     if not (p > 0) or math.isnan(p):
         raise ValueError(f"prezzo non valido: {p}")
-    dec = max(0, 4 - math.floor(math.log10(p)))
-    s = f"{p:.{dec}f}"
+    p2 = float(f"{p:.5g}")          # arrotonda PRIMA a 5 cifre significative
+    dec = min(max(0, 4 - math.floor(math.log10(p2))),
+              max(0, 6 - int(sz_decimals)))
+    s = f"{p2:.{dec}f}"
+    if float(s) <= 0:
+        raise ValueError(f"prezzo {p} collassa a 0 con {dec} decimali")
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
@@ -46,11 +50,15 @@ class HyperliquidExecutor:
 
     def set_leverage(self, coin, leverage, is_cross=True):
         idx, _ = self.c.asset_index(coin)
-        return self.c._post("/exchange", {
-            "wallet": self.cfg.wallet,
-            "action": {"type": "updateLeverage", "asset": idx,
-                       "isCross": is_cross, "leverage": int(leverage)},
-        })
+        try:
+            return self.c._post("/exchange", {
+                "wallet": self.cfg.wallet,
+                "action": {"type": "updateLeverage", "asset": idx,
+                           "isCross": is_cross, "leverage": int(leverage)},
+            })
+        except Exception as e:
+            # ponytail: il mirror puo' non implementare updateLeverage; il fill resta la verita'
+            return {"status": "skipped", "error": repr(e)}
 
     def place_market(self, coin, side, qty, ref_px, reduce_only=False):
         """Market IOC. side in {'long','short'}; long => buy aggressivo.
@@ -67,7 +75,8 @@ class HyperliquidExecutor:
         wire = {
             "a": idx,
             "b": is_buy,
-            "p": _fmt_px(ref_px * (1 + pad if is_buy else 1 - pad)),
+            "p": _fmt_px(ref_px * (1 + pad if is_buy else 1 - pad),
+                         uni.get("szDecimals", 5)),
             "s": _fmt_sz(qty, uni.get("szDecimals", 5)),
             "r": reduce_only,
             "t": {"limit": {"tif": "Ioc"}},
@@ -111,13 +120,15 @@ class HyperliquidExecutor:
         wire = {
             "a": idx,
             "b": is_buy,
-            "p": _fmt_px(slip),
+            "p": _fmt_px(slip, uni.get("szDecimals", 5)),
             "s": _fmt_sz(qty, uni.get("szDecimals", 5)),
             "r": True,
             # Il mirror esige anche la clausola limit (tif Gtc) accanto al trigger:
             # engine/order.ts la legge per limitPx anche con isMarket=true.
             "t": {"trigger": {"isMarket": True,
-                              "triggerPx": _fmt_px(trigger_px), "tpsl": tpsl},
+                              "triggerPx": _fmt_px(trigger_px,
+                                                   uni.get("szDecimals", 5)),
+                              "tpsl": tpsl},
                   "limit": {"tif": "Gtc"}},
         }
         t0 = time.time()

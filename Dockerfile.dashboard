@@ -3,6 +3,7 @@
 FROM hyperliquid_trading_agents-trading-bot:latest
 WORKDIR /app
 COPY dashboard ./dashboard
+COPY scripts/dashboard_healthcheck.py ./scripts/dashboard_healthcheck.py
 RUN pip install --no-cache-dir "fastapi>=0.111" "uvicorn[standard]>=0.30" "websockets>=12"
 
 # state/ (bot.db + cycle_report.json + bot.log) resta un volume condiviso col bot.

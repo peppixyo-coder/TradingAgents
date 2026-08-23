@@ -134,6 +134,10 @@ class Agg:
             if self._pos_ch is None or time.time() - self._pos_t > 300:
                 raise
             print(f"[positions] rate-limit, uso cache stantia: {e}", flush=True)
+        return self.parse_positions()
+
+    def parse_positions(self):
+        """Puro: assetPositions cached -> lista dict per il tick. Zero I/O rete."""
         ch = self._pos_ch
         now = time.time()
         out = []
@@ -353,7 +357,7 @@ class Agg:
                 {"name": "Signal OFI", "lastTs": last_scan.get("ts") if last_scan else None},
                 {"name": "Analysts", "lastTs": next((r["ts"] for r in reversed(scans) if r.get("panel")), None)},
                 {"name": "Trader PM", "lastTs": next((r["ts"] for r in reversed(scans) if r.get("llm_side")), None)},
-                {"name": "RiskManager", "lastTs": next((r["ts"] for r in reversed(scans) if r.get("reason", "").startswith("veto") or r["executed"]), None)},
+                {"name": "RiskManager", "lastTs": next((r["ts"] for r in reversed(scans) if (r.get("reason") or "").startswith("veto") or r["executed"]), None)},
                 {"name": "Executor", "lastTs": next((r["ts"] for r in reversed(scans) if r["executed"]), None)},
             ],
             "recent": scans[-40:],
@@ -554,19 +558,23 @@ async def broadcast(payload):
 
 async def fast_loop():
     while True:
+        # Zero fetch: legge la cache che slow_loop rinfresca ogni 5s.
+        # Il tick non puo' mai bloccarsi su retry 429 del mirror.
         try:
-            positions, eq_now = await asyncio.to_thread(
-                lambda: (agg.positions_live(), agg.equity_cached()))
+            pos = agg.parse_positions() if agg._pos_ch is not None else None
+        except Exception as e:
+            print(f"[fast_loop] {type(e).__name__}: {e}", flush=True)
+            pos = None
+        eq_now = agg._eq_v
+        if pos:
             k = agg.last_kpis
             ds = k.get("dayStart")
             await broadcast({"t": "tick", "ts": int(time.time() * 1000),
-                             "mids": agg.mids, "positions": positions,
+                             "mids": agg.mids, "positions": pos,
                              "equity": eq_now,
-                             "dayPnl": eq_now - ds if ds else 0,
-                             "dayPnlPct": (eq_now / ds - 1) * 100 if ds else 0,
-                             "unrealized": sum(p["uPnL"] for p in positions)})
-        except Exception as e:
-            print(f"[fast_loop] {type(e).__name__}: {e}", flush=True)
+                             "dayPnl": eq_now - ds if ds and eq_now else 0,
+                             "dayPnlPct": (eq_now / ds - 1) * 100 if ds and eq_now else 0,
+                             "unrealized": sum(p["uPnL"] for p in pos)})
         await asyncio.sleep(1)
 
 

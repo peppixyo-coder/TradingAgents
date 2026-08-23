@@ -283,6 +283,17 @@ What does not vary anymore: the analyzed company identity is resolved determinis
 
 Backtest results are not guaranteed to match any published figure. Returns depend on the model, the temperature, the date range, data quality, and the sampling above. Treat the framework as a research scaffold for studying multi-agent analysis, not as a strategy with a fixed, replicable return.
 
+## Dashboard Health
+
+The institutional dashboard (`:8080`) serves every tab from one WebSocket `metrics` frame plus 1-second `tick` frames. If any field goes missing or malformed, tabs silently render empty while prices keep scrolling — a broken dashboard looks alive. Rule: **every backend change that touches a field the dashboard reads ships with a green healthcheck before merge.**
+
+```bash
+python scripts/dashboard_healthcheck.py   # 111 checks: REST fields, WS frames, served assets
+python -m pytest tests/test_dashboard_regression.py -q   # same checks as a regression test
+```
+
+The Docker image runs the same script as its container `healthcheck` (60s interval), so a regressed dashboard shows `unhealthy` in `docker ps` instead of failing silently.
+
 ## Contributing
 
 Contributions are welcome: bug fixes, documentation, and feature ideas; past contributions are credited per release in [`CHANGELOG.md`](CHANGELOG.md).

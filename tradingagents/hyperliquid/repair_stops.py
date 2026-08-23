@@ -34,7 +34,7 @@ def main():
               f"(cancel={r['status'] if r else 'n/a'}, new={nr['status']} "
               f"oid={nr.get('oid')})")
         if nr["status"] == "resting":
-            store.intent_attach_stop(it["id"], nr["oid"])
+            store.intent_attach_stop(it["id"], nr["oid"], stop_px)
         else:
             print(f"  ATTENZIONE: re-place non resting, verificare manualmente")
 

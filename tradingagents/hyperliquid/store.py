@@ -89,9 +89,13 @@ def intents_open():
         return conn.execute("SELECT * FROM intents WHERE status='open'").fetchall()
 
 
-def intent_attach_stop(intent_id, stop_oid):
+def intent_attach_stop(intent_id, stop_oid, stop_px=None):
     with connect() as conn:
-        conn.execute("UPDATE intents SET stop_oid=? WHERE id=?", (stop_oid, intent_id))
+        if stop_px is not None:
+            conn.execute("UPDATE intents SET stop_oid=?, stop_px=? WHERE id=?",
+                         (stop_oid, stop_px, intent_id))
+        else:
+            conn.execute("UPDATE intents SET stop_oid=? WHERE id=?", (stop_oid, intent_id))
 
 
 def intent_close(intent_id, reason):

@@ -248,6 +248,8 @@ class Agg:
 
         tot_pnl = sum(pnls)
         return {
+            "realizedToday": realized_today,
+            "feesTot": sum(t["fee"] or 0 for t in closed),
             "equity": eq_now, "seed": self.cfg.paper_seed_balance,
             "dayStart": self.day_start_eq,
             "dayPnl": eq_now - self.day_start_eq,

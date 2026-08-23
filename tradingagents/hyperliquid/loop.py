@@ -104,8 +104,23 @@ def reconcile(c, cfg, ex):
             store.intent_close(it["id"], "position-gone")
             log(f"[reconcile] {it['coin']} chiusa (stop/manuale): intent #{it['id']} archiviato")
             continue
+        # la clearinghouse fa fede: qty parziale/esterna si sincronizza, lo stop
+        # con size vecchia si ripiazza (reduceOnly clamperebbe comunque lo scarto)
+        real = abs(positions[it["coin"]])
+        if abs(real - it["qty"]) > max(1e-9, it["qty"] * 1e-6):
+            log(f"[DRIFT] {it['coin']}: qty {it['qty']} -> {real} (sync clearinghouse)")
+            store.intent_set_qty(it["id"], real)
+            it["qty"] = real
+            if it["stop_oid"]:
+                r = ex.cancel_order(it["coin"], it["stop_oid"])
+                if str(r.get("status", "")).lower() == "canceled":
+                    attach_stop(ex, it)
+                else:
+                    log(f"[DRIFT] {it['coin']}: cancel stop {it['stop_oid']} = "
+                        f"{r.get('status')}; tengo il vecchio (reduceOnly clampa)")
+            continue
         live = _has_live_stop(c, cfg, it["coin"])
-        if it["stop_oid"] is None or live is False:
+        if live is False:
             log(f"[reconcile] {it['coin']}: stop mancante, ri-attach")
             attach_stop(ex, it)
 

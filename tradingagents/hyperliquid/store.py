@@ -98,6 +98,11 @@ def intent_attach_stop(intent_id, stop_oid, stop_px=None):
             conn.execute("UPDATE intents SET stop_oid=? WHERE id=?", (stop_oid, intent_id))
 
 
+def intent_set_qty(intent_id, qty):
+    with connect() as conn:
+        conn.execute("UPDATE intents SET qty=? WHERE id=?", (qty, intent_id))
+
+
 def intent_close(intent_id, reason):
     with connect() as conn:
         conn.execute("UPDATE intents SET status='closed', closed_ts=?, close_reason=? "

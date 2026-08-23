@@ -74,6 +74,7 @@ class Agg:
         self._pos_t = 0.0                #   (HyPaper /info ha rate limit; senza,
         self._eq_v = None                #   fast_loop+slow_loop fanno ~80 req/min
         self._eq_t = 0.0                 #   e prendono 429 a raffica)
+        self._xp = {}                    # (coin, ts_s) -> close px, candele storiche
         self.clients = set()
 
     # ---------- sorgenti ----------
@@ -161,13 +162,18 @@ class Agg:
 
     def exit_px(self, coin, ts_s):
         """Prezzo di chiusura stimato: candela 1m più vicina a ts (niente userFills)."""
+        key = (coin, ts_s)
+        if key in self._xp:
+            return self._xp[key]
         try:
             cs = self.rest({"type": "candleSnapshot",
                             "req": {"coin": coin, "interval": "1m",
                                     "startTime": int((ts_s - 120) * 1000),
                                     "endTime": int((ts_s + 120) * 1000)}}) or []
             best = min(cs, key=lambda c: abs(int(c["t"]) / 1000 - ts_s))
-            return float(best["c"])
+            px = float(best["c"])
+            self._xp[key] = px  # candela storica: immutabile, cache permanente
+            return px
         except Exception:
             return None
 
@@ -578,6 +584,7 @@ async def slow_loop():
         except Exception:
             import traceback
             print("[slow_loop] " + traceback.format_exc(), flush=True)
+        await asyncio.sleep(5)  # senza questo: busy-loop, saturava il rate limit
 
 
 @app.websocket("/ws")

@@ -6,6 +6,7 @@ Contratto T09: retry con backoff esponenziale (max 5) su 429/timeout.
 """
 import asyncio
 import json
+import os
 import re
 import time
 
@@ -25,15 +26,21 @@ class DataError(RuntimeError):
 class HyPaperClient:
     def __init__(self, base_url):
         self.base = base_url.rstrip("/")
+        # Dati di mercato pubblici -> mainnet HL; stato paper/execuzione -> mirror.
+        self.pub_base = os.getenv("HL_PUBLIC_URL", "https://api.hyperliquid.xyz").rstrip("/")
         self.s = requests.Session()
         self._meta = None
         self._meta_ts = 0.0
 
     def _post(self, path, payload, timeout=15):
         last = None
+        # /info senza "user" e' dato di mercato pubblico (mids, candele, ctx,
+        # l2Book): va su mainnet HL. Stato account/ordini ed /exchange restano
+        # sul mirror HyPaper: e' l'unica fonte della verita' del paper wallet.
+        base = self.pub_base if path == "/info" and "user" not in payload else self.base
         for attempt in range(5):
             try:
-                r = self.s.post(self.base + path, json=payload, timeout=timeout)
+                r = self.s.post(base + path, json=payload, timeout=timeout)
                 if r.status_code == 429:
                     raise requests.HTTPError("429")
                 r.raise_for_status()
@@ -47,7 +54,7 @@ class HyPaperClient:
                 # ponytail: il 429 di HL e' una finestra per-minuto -> attende
                 # oltre la finestra invece del backoff breve da thundering-herd.
                 time.sleep(21 if "429" in str(last) else 0.5 * 2 ** attempt)
-        raise DataError(f"{self.base}{path} fallito dopo 5 tentativi: {last} {body[:200]}")
+        raise DataError(f"{base}{path} fallito dopo 5 tentativi: {last} {body[:200]}")
 
     def meta(self, ttl=3600):
         if self._meta is None or time.time() - self._meta_ts > ttl:

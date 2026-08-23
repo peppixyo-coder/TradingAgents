@@ -99,10 +99,10 @@ function renderKpiStatics() {
   setTxt("k-ddnow", `ora ${fdd(k.ddNow)} · limite −10%`);
   $("#dd-fill").style.width = Math.min((k.ddNow || 0) / 10 * 100, 100) + "%";
   setTxt("k-margin", usd(k.marginUsed || 0));
-  const lev = k.levTot || 0;
-  $("#k-lev").textContent = `${lev.toFixed(2)}x / 3.00x max`;
-  $("#lev-fill").style.width = Math.min(lev / 3 * 100, 100) + "%";
-  $("#lev-fill").className = lev >= 2.5 ? "warn" : "";
+  const lev = k.levTot || 0, cap = S.cfg?.lev_cap || 3;
+  $("#k-lev").textContent = `${lev.toFixed(2)}x / ${(+cap).toFixed(2)}x max`;
+  $("#lev-fill").style.width = Math.min(lev / cap * 100, 100) + "%";
+  $("#lev-fill").className = lev >= cap * 0.83 ? "warn" : "";
   drawSpark();
 }
 
@@ -249,7 +249,7 @@ function renderRisk() {
     ["Max DD storico", "−" + (k.maxDD || 0).toFixed(2) + "%"],
     ["Perdite consecutive", `${k.consecLosses || 0} (record ${k.consecRecord || 0})`],
     ["Veto rate", (k.vetoRate || 0).toFixed(0) + "%"],
-    ["Lev cap", c.lev_cap + "x"], ["Frac base", (c.base_frac * 100) + "%"],
+    ["Leva tot max (portfolio)", c.lev_cap + "x"], ["Frac base", (c.base_frac * 100) + "%"],
     ["Margin used", usd(k.marginUsed || 0)], ["DD giornaliero", (c.daily_dd * 100) + "%"],
   ]);
 }
@@ -281,9 +281,10 @@ function renderTrades() {
       <td>${px(t.entry)}</td><td>${t.exit != null ? px(t.exit) : "—"}</td>
       <td class="${cls(t.pnl)}">${t.pnl != null ? usd(t.pnl) : "—"}</td>
       <td class="${cls(t.pnlPct)}">${t.pnlPct != null ? pct(t.pnlPct) : "—"}</td>
+      <td class="mono">${t.lev != null ? t.lev + "x" : "—"}</td>
       <td>${dur(t.durS)}</td><td class="sans">${esc(t.closeReason || t.status)}</td>
       <td class="hint">▾</td></tr>`).join("") ||
-    `<tr><td colspan="12" class="empty">nessun trade.</td></tr>`;
+    `<tr><td colspan="13" class="empty">nessun trade.</td></tr>`;
 }
 function toggleTradeRow(tr) {
   const id = +tr.dataset.id;
@@ -295,7 +296,7 @@ function toggleTradeRow(tr) {
   tr.classList.add("sel");
   const p = t.panel || {};
   const tr2 = document.createElement("tr"); tr2.className = "xrow";
-  tr2.innerHTML = `<td colspan="12"><div class="detail-grid">
+  tr2.innerHTML = `<td colspan="13"><div class="detail-grid">
     <div><h3 class="card-h" style="margin-top:0">Decisione</h3><div class="kv cols">${kv([
       ["Confidence", t.confidence ?? "—"], ["Stop teorico", t.stop ? px(t.stop) : "—"],
       ["Fee", t.fee != null ? usd(t.fee) : "—"], ["Chiuso", t.tsClose || "aperto"]])}</div>

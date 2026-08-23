@@ -68,7 +68,87 @@ def test_store_intent_lifecycle():
         store.DB = old_db
 
 
+def test_size_order_leva_autonoma():
+    """STEP leva: nessun cap artificiale; clip solo al max exchange; manca leva -> veto."""
+    from types import SimpleNamespace
+    from tradingagents.hyperliquid import risk
+
+    cfg = SimpleNamespace(base_frac=0.02, min_notional=10, atr_stop_mult=1.5, lev_cap=3)
+    args = (cfg, 10000, 3000, 0.8, 30, 1.2)
+
+    p = risk.size_order(*args, coin="ETH", leverage=20, max_lev_exch=50)
+    assert p["leverage"] == 20 and p["lev_note"] is None and not p["veto"]
+
+    p = risk.size_order(*args, coin="HYPE", leverage=20, max_lev_exch=10)
+    assert p["leverage"] == 10 and "clippata a 10x" in (p["lev_note"] or "")
+
+    p = risk.size_order(*args, coin="BTC", leverage=None, max_lev_exch=40)
+    assert "LEVERAGE_MISSING" in (p["veto"] or "")
+
+
+def test_portfolio_veto_hard_vs_advisory():
+    """LEV_TOT e' advisory (notional compliant suggerito); ASSET_CAP resta hard."""
+    from types import SimpleNamespace
+    from tradingagents.hyperliquid import risk
+
+    cfg = SimpleNamespace(base_frac=0.02, lev_cap=0.13)  # cap basso: isola la logica
+    pos = [{"position": {"coin": "BTC", "szi": "0.5", "positionValue": "500",
+                         "leverage": {"value": "5"}}}]
+    hard, adv = risk.portfolio_veto(cfg, 10000, "ETH", 900, pos, 0)
+    assert hard == [] and adv["max_notional"] == 800.0 and "LEV_TOT" in adv["why"]
+
+    hard, adv = risk.portfolio_veto(cfg, 10000, "BTC", 2000, pos, 0)
+    assert any("ASSET_CAP" in r for r in hard)
+
+
+def test_store_leverage_roundtrip_e_migration():
+    """Colonna leverage su DB nuovo e migration ALTER su DB legacy."""
+    tmp = tempfile.mkdtemp()
+    old_db = store.DB
+    try:
+        legacy = os.path.join(tmp, "legacy.db")
+        import sqlite3
+        with sqlite3.connect(legacy) as conn:
+            conn.executescript(
+                "CREATE TABLE intents (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "ts TEXT NOT NULL, coin TEXT NOT NULL, side TEXT NOT NULL,"
+                "qty REAL NOT NULL, entry_px REAL NOT NULL, stop_px REAL NOT NULL,"
+                "status TEXT NOT NULL DEFAULT 'open', fill_oid INTEGER,"
+                "stop_oid INTEGER, closed_ts TEXT, close_reason TEXT);")
+        store.DB = legacy
+        store.init()  # migration idempotente aggiunge la colonna
+        iid = store.intent_open("BTC", "long", 0.01, 50000.0, 49000.0,
+                                leverage=7)
+        row = store.intents_open()[0]
+        assert row["leverage"] == 7 and iid == row["id"]
+    finally:
+        store.DB = old_db
+
+
+def test_registry_max_leverage():
+    """maxLeverage arriva dal meta HL per coin; coin ignota -> 1."""
+    from tradingagents.hyperliquid import registry
+
+    class Fake:
+        def asset_ctxs(self):
+            return {"universe": [
+                {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
+                {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}]}, None
+
+        def _post(self, path, payload):
+            return {"universe": [{}, {}]}
+
+    c = Fake()
+    assert registry.max_leverage(c, "BTC") == 40
+    assert registry.max_leverage(c, "ETH") == 25
+    assert registry.max_leverage(c, "NOPE") == 1
+
+
 if __name__ == "__main__":
     test_trigger_wire_has_limit_clause()
     test_store_intent_lifecycle()
-    print("OK: 2/2 check passati")
+    test_size_order_leva_autonoma()
+    test_portfolio_veto_hard_vs_advisory()
+    test_store_leverage_roundtrip_e_migration()
+    test_registry_max_leverage()
+    print("OK: 6/6 check passati")

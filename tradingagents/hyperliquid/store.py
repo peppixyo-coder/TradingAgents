@@ -9,8 +9,8 @@ import os
 import sqlite3
 import time
 
-DB = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..",
-                                   "state", "bot.db"))
+DB = os.path.normpath(os.environ.get("HL_DB") or os.path.join(
+    os.path.dirname(__file__), "..", "..", "state", "bot.db"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv (
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS intents (
   qty REAL NOT NULL,
   entry_px REAL NOT NULL,
   stop_px REAL NOT NULL,
+  leverage REAL,                 -- leva scelta dal PM per questo trade
   status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'closed'
   fill_oid INTEGER,
   stop_oid INTEGER,
@@ -55,6 +56,10 @@ def connect():
 def init():
     with connect() as conn:
         conn.executescript(_SCHEMA)
+        try:  # migration: DB gia' provisionati non hanno la colonna leverage
+            conn.execute("ALTER TABLE intents ADD COLUMN leverage REAL")
+        except sqlite3.OperationalError:
+            pass
 
 
 def kv_get(k, default=None):
@@ -69,13 +74,13 @@ def kv_set(k, v):
                      "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
 
 
-def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None):
+def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None, leverage=None):
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid) "
-            "VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid,leverage) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             (time.strftime("%Y-%m-%dT%H:%M:%S%z"), coin, side, qty,
-             entry_px, stop_px, fill_oid))
+             entry_px, stop_px, fill_oid, leverage))
         return cur.lastrowid
 
 

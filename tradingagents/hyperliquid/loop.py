@@ -155,6 +155,15 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         return done(False, f"|OFI_z|={abs(z):.2f} < soglia {cfg.signal_z_min}")
     quant_side = "long" if z > 0 else "short"
 
+
+    # ---- contesto rischio per la scelta leva del PM (decisa dal grafo) ----
+    eq = equity(c, cfg)
+    ch_pre = c.clearinghouse_state(cfg.wallet)
+    ml_exch = registry.max_leverage(c, coin)
+    open_ps = [p for p in ch_pre["assetPositions"] if float(p["position"]["szi"]) != 0]
+    cur_lev = sum(risk.pos_value(p) for p in open_ps) / eq if eq > 0 else 0.0
+    margin_free = eq - risk.margin_used_of(ch_pre["assetPositions"])
+
     # ---- grafo agenti ----
     whales = sorted((t["px"] * t["sz"] for t in trades), reverse=True)
     whale_line = (f"print più grande: ${whales[0]:,.0f}\n" if whales else "nessun print\n")
@@ -167,6 +176,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         f"Tecnico: 1h {signal.tf_summary(h1[-72:])}; 4h {signal.tf_summary(h4[-42:])}; "
         f"1D {signal.tf_summary(d1)}; regime={reg}\n"
         f"Volatilità: sigma_ann={(sigma or 0):.1%}, ATR(14,1h)=${(atr or 0):.1f}\n"
+        f"Rischio: leva max exchange={ml_exch}x; leva portfolio attuale={cur_lev:.2f}x "
+        f"su max {cfg.lev_cap}x; margine libero=${margin_free:,.0f}\n"
         f"Flusso taker (finestra {cfg.ws_collect_seconds}s): OFI_z={z:+.2f}; {whale_line}"
         f"Sentiment: Fear&Greed={fng_v} ({fng_c})\n"
         f"News: " + " | ".join(heads[:4])
@@ -181,20 +192,33 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
         return done(False, f"LLM {llm_side} contro segnale {quant_side}", gextra)
+    lev_choice = g["decision"].get("leverage")
+    if isinstance(lev_choice, bool) or not isinstance(lev_choice, (int, float)):
+        return done(False, "NO_LEVERAGE: il PM non ha scelto la leva", gextra)
 
     # ---- rischio ----
-    eq = equity(c, cfg)
     vetoes = risk.check_dd_veto(cfg, eq)
-    ch_now = c.clearinghouse_state(cfg.wallet)
-    plan = risk.size_order(cfg, eq, mid, sigma, atr, conv)
+    ch_now = ch_pre
+    plan = risk.size_order(cfg, eq, mid, sigma, atr, conv,
+                           coin=coin, leverage=lev_choice, max_lev_exch=ml_exch)
+    if plan.get("lev_note"):
+        log(plan["lev_note"])
     stop_px = mid - plan["stop_dist"] if llm_side == "long" else mid + plan["stop_dist"]
     corr_n = scanner.correlated_open_count(
         [x["c"] for x in d1], [i["coin"] for i in store.intents_open()], coin,
         lambda oc: c.candles_cached(oc, "1d", 90 * 24 * 3600 * 1000))
-    pv = risk.portfolio_veto(cfg, eq, coin, plan["notional"],
-                             ch_now["assetPositions"], corr_n, plan["leverage"])
-    if vetoes or plan["veto"] or pv:
-        return done(False, f"veto: {vetoes or plan['veto'] or pv}", {"plan": plan})
+    hard, adv = risk.portfolio_veto(cfg, eq, coin, plan["notional"],
+                                    ch_now["assetPositions"], corr_n)
+    if vetoes or plan["veto"] or hard:
+        return done(False, f"veto: {vetoes or plan['veto'] or hard}", {"plan": plan})
+    if adv:  # leva totale oltre cap: NON veto, riduco il notionale e procedo compliant
+        mx = adv["max_notional"]
+        log(f"[Risk] ADVISORY {adv['why']} -> notional ridotto a ${mx:,.0f} "
+            f"(leva totale esattamente {cfg.lev_cap}x)")
+        if mx < cfg.min_notional:
+            return done(False, f"advisory LEV_TOT: budget ${mx:.0f} < min_notional",
+                        {"plan": plan})
+        plan = dict(plan, notional=round(mx, 2), qty=round(mx / mid, 5))
 
     # ---- esecuzione + stop nativo + persistenza intento ----
     ex.set_leverage(coin, plan["leverage"])
@@ -205,7 +229,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     entry_px = fill["avg_px"]
 
     intent_id = store.intent_open(coin, llm_side, fill["filled_sz"],
-                                  entry_px, stop_px, fill.get("oid"))
+                                  entry_px, stop_px, fill.get("oid"),
+                                  plan["leverage"])
     stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
                             "qty": fill["filled_sz"], "stop_px": stop_px})
 
@@ -272,6 +297,8 @@ def main(argv=None):
     c = HyPaperClient(cfg.hypaper_url)
     ex = HyperliquidExecutor(c, cfg)
     interval = int(os.getenv("HL_SCAN_INTERVAL", "900"))
+    cycles_left = next((int(a.split("=", 1)[1]) for a in argv
+                        if a.startswith("--cycles=")), 0)
     if "--close-all" in argv:
         for it in store.intents_open():
             close_position(c, cfg, ex, dict(it))
@@ -306,7 +333,7 @@ def main(argv=None):
                 log(f"[scan] {r['coin']:8s} px={r['mid']:,.4g} z={r['ofi_z']:+.2f} "
                     f"rsi={r['rsi']} macd_h={r['macd_h']} vol_x={r['vol_x']} "
                     f"fundD={r['funding_delta']} oiD={r['oi_delta']}")
-            trig = scanner.triggers(rows, cfg.signal_z_min)
+            trig = scanner.triggers(rows, cfg.signal_z_min, d1_map=d1_map, log_fn=log)
             _write_screener_json(rows, funnel, [t["coin"] for t in trig])
             log(f"[trigger] {len(trig)}/{len(rows)} sopra {cfg.signal_z_min}s: "
                 f"{[r['coin'] for r in trig]}")
@@ -333,6 +360,10 @@ def main(argv=None):
             log(f"[loop] ERRORE ciclo: {e!r}")
         if once:
             break
+        if cycles_left > 0:
+            cycles_left -= 1
+            if cycles_left == 0:
+                break
         time.sleep(interval)
 
 

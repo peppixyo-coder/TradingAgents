@@ -1,12 +1,12 @@
 """RiskManager: traduce (side, conviction) in ordine dimensionato; hard-veto su capitale.
 
 Contratto ratificato: hard-veto su DD giornaliero (-5%), settimanale (-10%),
-MAX_CONCURRENT=5 posizioni aperte, MIN_NOTIONAL=$10 sotto cui skip. La leva
-viene impostata preventivamente al cap (3x cross) e il margine allocato resta
-<= base_frac x balance anche a leva piena.
+MAX_CONCURRENT=5 posizioni aperte, MIN_NOTIONAL=$10 sotto cui skip. La LEVA
+e' scelta dal Trader Agent per ogni trade: nessun cap per-posizione nel codice.
+Il RiskManager la clippa solo al massimo consentito dall'exchange per l'asset
+e valuta la leva TOTALE del portfolio come advisory con riduzione di size.
 """
 from . import store
-import math
 import time
 
 
@@ -34,7 +34,8 @@ def check_dd_veto(cfg, equity_now):
     return reasons
 
 
-def size_order(cfg, balance, mid, sigma, atr, conviction):
+def size_order(cfg, balance, mid, sigma, atr, conviction,
+               coin="", leverage=None, max_lev_exch=None):
     """Piano d'ordine dimensionato. veto non-Nullo => nessun ordine."""
     vetoes = []
     garch = max(0.25, min(2.0, 0.58 / sigma)) if sigma and sigma > 0 else 1.0
@@ -44,14 +45,25 @@ def size_order(cfg, balance, mid, sigma, atr, conviction):
 
     qty = round(notional / mid, 5) if mid > 0 else 0.0
     stop_dist = cfg.atr_stop_mult * atr if atr and atr > 0 else notional * 0.02
-    lev = int(min(cfg.lev_cap, max(1, math.ceil(notional / (balance * cfg.base_frac)))))
+    # Leva del PM: nessun default nel codice; se manca -> veto (skip ciclo).
+    if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or float(leverage) < 1:
+        vetoes.append("LEVERAGE_MISSING (il PM non ha scelto la leva)")
+        leverage = 1
+    lev_note = None
+    if max_lev_exch and leverage > max_lev_exch:
+        lev_note = (f"[Risk] Leva richiesta {leverage:g}x > max exchange "
+                    f"{max_lev_exch}x per {coin}, clippata a {max_lev_exch}x")
+        leverage = float(max_lev_exch)
     return {
         "veto": "; ".join(vetoes) if vetoes else None,
         "notional": round(notional, 2),
         "qty": qty,
         "garch_mult": round(garch, 3),
-        "leverage": lev,
-        "stop_dist": round(stop_dist, 1),
+        "leverage": int(round(float(leverage))),
+        "lev_note": lev_note,
+        # ponytail: round a 8 cifre, non 1 - round(x,1) azzerava lo stop dei coin <$1
+        # (ENA/MON/VIRTUAL: stop==entry). Upgrade path: tick-size reale per asset.
+        "stop_dist": round(stop_dist, 8),
     }
 
 
@@ -60,7 +72,7 @@ CORR_THRESHOLD = 0.7       # |rho| close 30d oltre il quale due asset sono corre
 CORR_MAX_CLUSTER = 3       # max posizioni contemporanee in un cluster correlato
 
 
-def _pos_value(p):
+def pos_value(p):
     pos = p["position"]
     v = pos.get("positionValue")
     if v is not None:
@@ -68,24 +80,33 @@ def _pos_value(p):
     return abs(float(pos["szi"])) * float(pos.get("entryPx") or 0)
 
 
-def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count, new_lev=1):
-    """Limiti portafoglio spec multi-asset: <=10% equity/asset, leva totale
-    <= lev_cap, margine libero sufficiente, cluster correlati <= CORR_MAX_CLUSTER.
-    Motivi (vuota = ok)."""
-    reasons = []
-    if eq <= 0:
-        return ["EQUITY<=0"]
+def margin_used_of(asset_positions):
     open_ps = [p for p in asset_positions if float(p["position"]["szi"]) != 0]
-    expo = {p["position"]["coin"]: _pos_value(p) for p in open_ps}
+    return sum(pos_value(p) / max(1.0, float(
+        p["position"].get("leverage", {}).get("value", 1))) for p in open_ps)
+
+
+def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
+    """Limiti portafoglio spec multi-asset: <=10% equity/asset e cluster
+    correlati <= CORR_MAX_CLUSTER e margine libero sufficiente sono HARD-veto;
+    la leva totale <= lev_cap e' ADVISORY: ritorna il notionale che porta la
+    leva esattamente al cap cosi' l'ordine entra comunque in compliance.
+    Ritorna (reasons_hard, advisory|None)."""
+    if eq <= 0:
+        return ["EQUITY<=0"], None
+    reasons, advisory = [], None
+    open_ps = [p for p in asset_positions if float(p["position"]["szi"]) != 0]
+    expo = {p["position"]["coin"]: pos_value(p) for p in open_ps}
     if (expo.get(coin, 0.0) + notional) / eq > MAX_ASSET_FRAC:
         reasons.append(f"ASSET_CAP>{MAX_ASSET_FRAC:.0%}")
-    if (sum(expo.values()) + notional) / eq > cfg.lev_cap:
-        reasons.append(f"LEV_TOT>{cfg.lev_cap}x")
-    margin_used = sum(_pos_value(p) / max(1.0, float(
-        p["position"].get("leverage", {}).get("value", 1))) for p in open_ps)
-    margin_free = eq - margin_used
-    if margin_free * new_lev < notional:
+    cur = sum(expo.values())
+    if (cur + notional) / eq > cfg.lev_cap:
+        advisory = {"why": f"LEV_TOT {(cur + notional) / eq:.2f}x>{cfg.lev_cap}x",
+                    "max_notional": round(cfg.lev_cap * eq - cur, 2)}
+    margin_free = eq - margin_used_of(asset_positions)
+    new_lev = notional / max(eq * cfg.base_frac, 1e-9)  # leva implicita del nuovo tratto
+    if margin_free < notional:
         reasons.append(f"INSUFFICIENT_MARGIN free={margin_free:.0f}")
     if corr_count + 1 > CORR_MAX_CLUSTER:
         reasons.append(f"CORR_CLUSTER {corr_count}+1>{CORR_MAX_CLUSTER}")
-    return reasons
+    return reasons, advisory

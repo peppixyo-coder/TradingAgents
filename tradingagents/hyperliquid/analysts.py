@@ -21,9 +21,17 @@ DEBATE_SYS = (
 )
 DECIDE_SYS = (
     'Sei il portfolio manager finale di un fondo prop. Rispondi SOLO con JSON compatto '
-    '{"side":"long|short|flat","confidence":0..1,"rationale":"max 40 parole"}. '
+    '{"side":"long|short|flat","confidence":0..1,"leverage":<numero>=1,"rationale":"max 40 parole"}. '
     "side=flat se le evidenze contraddicono la direzione del segnale quantitativo o se "
-    "il quadro e' incoerente. Non inventare campi."
+    "il quadro e' incoerente. Non inventare campi. OBBLIGATORIO: quando side e' long "
+    "o short il campo 'leverage' deve SEMPRE essere presente (un numero >= 1): una "
+    "decisione senza leva viene scartata."
+)
+LEV_SYS = (
+    "Scegli TU la leva della posizione dai dati 'Rischio' nel contesto: nessun default "
+    "fisso. sigma_ann alta e funding costoso giustificano meno leva; confidence alta e "
+    "stop distante possono giustificarne di piu'. Lascia margine nel budget di leva "
+    "totale del portfolio per posizioni future: la tua leva non consuma tutto il cap."
 )
 
 
@@ -62,7 +70,7 @@ def run_graph(cfg, ctx):
     """
     panel = _chat(cfg, PANEL_SYS, ctx)
     debate = _chat(cfg, DEBATE_SYS, f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}")
-    raw = _chat(cfg, DECIDE_SYS,
+    raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS,
                 f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}\n\nDibattito:\n{debate}")
     try:
         j = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
@@ -70,6 +78,9 @@ def run_graph(cfg, ctx):
         raise RuntimeError(f"decisione non-JSON dal modello: {raw[:300]}")
     if j.get("side") not in ("long", "short", "flat"):
         raise RuntimeError(f"side invalido nella decisione: {raw[:300]}")
+    lev = j.get("leverage")
+    if isinstance(lev, bool) or not isinstance(lev, (int, float)) or float(lev) < 1:
+        j["leverage"] = None  # il loop skippa con NO_LEVERAGE: nessun default nel codice
     conf = j.get("confidence")
     if not isinstance(conf, (int, float)) or not 0 <= float(conf) <= 1:
         j["confidence"] = None  # advisory: registrato ma non usato per il sizing

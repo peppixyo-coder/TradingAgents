@@ -46,6 +46,7 @@ class Agg:
     """Aggregatore in-memory: unica fonte per tick e metrics."""
 
     def __init__(self):
+        store.init()  # idempotente: garantisce schema+migration (colonna leverage)
         self.cfg = load()
         self.c = HyPaperClient(self.cfg.hypaper_url)
         self.watchlist = [x.strip().upper() for x in
@@ -384,7 +385,7 @@ class Agg:
                 "qty": qty, "notional": entry * qty,
                 "entry": entry, "exit": xp, "stop": it["stop_px"],
                 "pnl": pnl, "fee": fee,
-                "lev": None, "confidence": rec.get("confidence"),
+                "lev": it["leverage"], "confidence": rec.get("confidence"),
                 "rationale": rec.get("rationale"), "panel": rec.get("panel"),
                 "debate": rec.get("debate"),
                 "tsOpen": it["ts"], "tsClose": it["closed_ts"],

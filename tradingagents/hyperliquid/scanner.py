@@ -126,8 +126,41 @@ def scan(passed, h1_map, d1_map, flow_map):
     return rows
 
 
-def triggers(rows, z_min, max_n=3):
-    """Top-N per |OFI_z| sopra soglia con conviction meccanico > 0."""
+def ema20_daily_gate(side, closes_1d, price):
+    """Pre-filtro trend EMA20 daily (rettifica replay T17): long solo sopra,
+    short solo sotto. Storia corta (<21 gg) passa: non blocco i listing nuovi."""
+    if len(closes_1d) < 21:
+        return True
+    k = 2 / 21
+    ema = closes_1d[0]
+    for c in closes_1d[1:]:
+        ema = c * k + ema * (1 - k)
+    return price >= ema if side > 0 else price <= ema
+
+
+def triggers(rows, z_min, max_n=3, d1_map=None, log_fn=None):
+    """Top-N per |OFI_z| sopra soglia con conviction meccanico > 0.
+
+    Con d1_map applica il pre-filtro trend EMA20 daily PRIMA del grafo LLM:
+    i segnali controtendenza non arrivano mai agli agenti. Gli scartati sono
+    loggati separatamente per verificare nel paper se il filtro taglia
+    buoni segnali o solo rumore."""
+
+    def say(m):
+        (log_fn or print)(m)
+
     hit = [r for r in rows if abs(r["ofi_z"]) >= z_min and r["conviction"] > 0]
     hit.sort(key=lambda r: -abs(r["ofi_z"]))
-    return hit[:max_n]
+    if d1_map is None:
+        return hit[:max_n]
+    passed = []
+    for h in hit:
+        side = 1 if h["ofi_z"] > 0 else -1
+        name = "LONG" if side > 0 else "SHORT"
+        if ema20_daily_gate(side, [x["c"] for x in d1_map.get(h["coin"]) or []], h["mid"]):
+            passed.append(h)
+        else:
+            pos = "sotto" if side > 0 else "sopra"
+            say(f"[Scanner] {h['coin']} {name} scartato: prezzo {pos} "
+                f"EMA20 daily (controtendenza)")
+    return passed[:max_n]

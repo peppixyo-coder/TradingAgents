@@ -653,6 +653,14 @@ def main(argv=None):
             _write_screener_json(rows, funnel, [t["coin"] for t in trig])
             log(f"[trigger] {len(trig)}/{len(rows)} sopra {cfg.signal_z_min}s: "
                 f"{[r['coin'] for r in trig]}")
+            # ponytail: i grafi upstream durano ~30 min -> senza tetto il
+            # ciclo si dilata per ore; budget con priorita' |z|, upgrade =
+            # scheduler con quote per classe.
+            _max_g = int(os.getenv("TRADINGAGENTS_MAX_GRAPHS_PER_CYCLE", "3"))
+            if len(trig) > _max_g:
+                trig = sorted(trig, key=lambda r: -abs(r["ofi_z"]))[:_max_g]
+                log(f"[loop] budget {_max_g} grafi/ciclo: top per |z|, "
+                    f"il resto al prossimo ciclo")
 
             fng_v, fng_c = fng()
             heads = rss_headlines()

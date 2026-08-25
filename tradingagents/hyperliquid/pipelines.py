@@ -7,6 +7,7 @@ Contratto identico al flusso crypto (analysts.run_graph):
   {"panel": ..., "debate": ..., "decision": {"side","confidence","rationale",...}}
 """
 import datetime as dt
+import os
 
 from . import analysts
 
@@ -72,7 +73,13 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
     t0 = dt.datetime.now()
     final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
 
-    side, conf = _RATING.get(str(rating).strip().lower(), ("flat", 0.0))
+    # ponytail: leva fornita alla frontiera - il prompt upstream esclude la
+    # leva dal PM ("risk manager separato", righe sopra); default prudente
+    # per classe, sostituisci con leva scelta dal PM quando i prompt la
+    # insegnano (fog: prompt engineering finale).
+    lev_default = float(os.getenv("TRADINGAGENTS_LEV_DEFAULT_CRYPTO", "3")
+                        if ac == "crypto_perp"
+                        else os.getenv("TRADINGAGENTS_LEV_DEFAULT_HIP3", "2"))
     dec = final_state.get("final_trade_decision") or ""
     return {
         "panel": {k: (final_state.get(k) or "")[:2500]
@@ -82,7 +89,7 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
                    "risk": str(final_state.get("risk_debate_state"))[:3000],
                    "trader_plan": str(final_state.get("trader_investment_plan"))[:2000]},
         "decision": {"side": side, "confidence": conf, "rationale": dec[:1500],
-                     "rating": rating},
+                     "rating": rating, "leverage": lev_default},
     }
 
 

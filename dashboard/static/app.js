@@ -282,7 +282,7 @@ function renderTrades() {
       <td class="${cls(t.pnl)}">${t.pnl != null ? usd(t.pnl) : "—"}</td>
       <td class="${cls(t.pnlPct)}">${t.pnlPct != null ? pct(t.pnlPct) : "—"}</td>
       <td class="mono">${t.lev != null ? t.lev + "x" : "—"}</td>
-      <td>${dur(t.durS)}</td><td class="sans">${esc(t.closeReason || t.status)}</td>
+      <td>${dur(t.durS)}</td><td class="sans">${esc(t.closeKind || t.closeReason || t.status)}</td>
       <td class="hint">▾</td></tr>`).join("") ||
     `<tr><td colspan="13" class="empty">nessun trade.</td></tr>`;
 }
@@ -521,7 +521,7 @@ function renderSystem() {
 function exportCsv() {
   const rows = filteredTrades();
   const cols = ["id", "coin", "side", "qty", "notional", "entry", "exit", "stop", "pnl",
-    "pnlPct", "fee", "confidence", "durS", "closeReason", "status", "tsOpen", "tsClose"];
+    "pnlPct", "fee", "confidence", "durS", "closeKind", "closeReason", "status", "tsOpen", "tsClose"];
   const csv = [cols.join(",")].concat(rows.map(t => cols.map(c =>
     JSON.stringify(t[c] ?? "")).join(","))).join("\n");
   const a = document.createElement("a");

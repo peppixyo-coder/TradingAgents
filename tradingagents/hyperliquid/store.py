@@ -60,6 +60,12 @@ def init():
             conn.execute("ALTER TABLE intents ADD COLUMN leverage REAL")
         except sqlite3.OperationalError:
             pass
+        for col, typ in (("peak_price", "REAL"),          # massimo favorevole toccato
+                         ("trailing_active", "INTEGER NOT NULL DEFAULT 0")):
+            try:
+                conn.execute(f"ALTER TABLE intents ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
 
 
 def kv_get(k, default=None):
@@ -108,6 +114,18 @@ def intent_close(intent_id, reason):
         conn.execute("UPDATE intents SET status='closed', closed_ts=?, close_reason=? "
                      "WHERE id=?",
                      (time.strftime("%Y-%m-%dT%H:%M:%S%z"), reason, intent_id))
+
+
+def intent_move_stop(intent_id, stop_px, stop_oid):
+    """Trailing: sostituisce lo stop resting (nuovo px + oid) e attiva il flag."""
+    with connect() as conn:
+        conn.execute("UPDATE intents SET stop_px=?, stop_oid=?, trailing_active=1 "
+                     "WHERE id=?", (stop_px, stop_oid, intent_id))
+
+
+def intent_set_peak(intent_id, peak):
+    with connect() as conn:
+        conn.execute("UPDATE intents SET peak_price=? WHERE id=?", (peak, intent_id))
 
 
 _last_backup_ts = 0.0

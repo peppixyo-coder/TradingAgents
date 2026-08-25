@@ -32,6 +32,9 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 TS_FMT = "%Y-%m-%dT%H:%M:%S%z"
 HL_WS_URL = "wss://api.hyperliquid.xyz/ws"
 TAKER_FEE = 0.00035  # stima: entrambe le gambe market/IOC
+_CLOSE_KIND = {"stop-loss": "STOP", "trailing-stop": "TRAILING",
+               "signal-reversal": "REVERSAL", "chiusura-manuale": "MANUAL",
+               "position-gone": "STOP"}
 
 
 def _parse_ts(s):
@@ -396,6 +399,7 @@ class Agg:
                 "tsOpen": it["ts"], "tsClose": it["closed_ts"],
                 "durS": int(tcs - t0i) if tcs else None,
                 "closeReason": it["close_reason"] or ("stop" if xp else None),
+                "closeKind": _CLOSE_KIND.get((it["close_reason"] or "").strip().lower()),
                 "status": "open" if it["status"] == "open" else "closed",
                 "pnlPct": (pnl / (entry * qty) * 100) if pnl is not None else None,
             })

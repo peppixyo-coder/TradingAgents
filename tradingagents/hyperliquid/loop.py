@@ -28,6 +28,63 @@ from .executor import HyperliquidExecutor
 
 WHALE_MIN_USD = 10_000     # print taker minimo ($): sotto, rumore nel prompt PM
 
+
+REVERSAL_CONF_MIN = 0.7   # conf PM minima per chiudere su segnale opposto
+TRAIL_ACTIVATE_ATR = 1.0  # profitto (in ATR) che attiva il trailing
+TRAIL_BUF = 0.002         # nuovo stop almeno a questo buffer dal mid
+
+
+def _ts(s):
+    """Epoch di un timestamp intent; 0 se imparsabile."""
+    # ponytail: mktime ignora l'offset %z (delta max 2h qui); per la finestra
+    # peak basta la precisione dell'ora.
+    try:
+        return time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%S%z"))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def trailing_candidate(side, entry, cur_stop, mark, atr, extreme,
+                       mult, act=TRAIL_ACTIVATE_ATR, buf=TRAIL_BUF):
+    """Livello di stop trailing o None se inattivo/non migliorabile.
+
+    extreme = estremo favorevole dall'apertura (peak long, trough short).
+    Attivo con profitto >= act*ATR; stop a extreme -/+ mult*ATR; si muove SOLO
+    a favore e resta a buf dal mid (trigger oltre mercato = rifiuto mirror).
+    """
+    if not (atr and atr > 0 and extreme and mark > 0 and entry > 0):
+        return None
+    prof_ok = (extreme - entry >= act * atr) if side == "long" \
+        else (entry - extreme >= act * atr)
+    if not prof_ok:
+        return None
+    cand = extreme - mult * atr if side == "long" else extreme + mult * atr
+    better = cand > cur_stop if side == "long" else cand < cur_stop
+    clear = cand < mark * (1 - buf) if side == "long" else cand > mark * (1 + buf)
+    return round(cand, 6) if (better and clear) else None
+
+
+def exit_reason_for(it):
+    """position-gone -> motivo: trailing se attivo con stop oltre l'entry
+    (chiusura in profitto), altrimenti stop-loss."""
+    if int(it.get("trailing_active") or 0) and \
+            ((it["side"] == "long") == (it["stop_px"] > it["entry_px"])):
+        return "trailing-stop"
+    return "stop-loss"
+
+
+def reversal_decision(held_side, llm_side, confidence,
+                      min_conf=REVERSAL_CONF_MIN):
+    "'fire'=chiudi su opposto; 'hold'=tieni; 'weak'=opposto sotto soglia."
+    if not held_side or llm_side in ("flat", held_side):
+        return "hold"
+    try:
+        conf = float(confidence or 0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    return "fire" if conf >= min_conf else "weak"
+
+
 def load_dotenv(path=None):
     """Minimo loader stdlib: KEY=VAL, #commenti; non sovrascrive l'ambiente."""
     path = path or os.path.join(os.path.dirname(__file__), "..", "..", ".env")
@@ -107,8 +164,13 @@ def reconcile(c, cfg, ex):
             entries[pos["coin"]] = float(pos.get("entryPx") or 0)
     for it in store.intents_open():
         if it["coin"] not in positions:
-            store.intent_close(it["id"], "position-gone")
-            log(f"[reconcile] {it['coin']} chiusa (stop/manuale): intent #{it['id']} archiviato")
+            reason = exit_reason_for(dict(it))
+            sgn = 1 if it["side"] == "long" else -1
+            est = (it["stop_px"] - it["entry_px"]) * it["qty"] * sgn
+            label = "TRAILING_STOP" if reason == "trailing-stop" else "STOP_LOSS"
+            log(f"[CLOSE] {it['coin']} {it['side'].upper()}: {label} @ ~"
+                f"{it['stop_px']:g} (PnL ${est:+,.2f}) - intent #{it['id']} archiviato")
+            store.intent_close(it["id"], reason)
             continue
         # la clearinghouse fa fede: qty parziale/esterna si sincronizza, lo stop
         # con size vecchia si ripiazza (reduceOnly clamperebbe comunque lo scarto)
@@ -161,13 +223,65 @@ def gather(cfg, c, coin):
             "fng": fng(), "heads": rss_headlines()}
 
 
+def maintain_trailing(c, cfg, ex):
+    """Trailing stop: per ogni posizione aperta aggiorna l'estremo favorevole
+    (candele 1h dall'entry) e sposta lo stop quando il profitto ha superato
+    1 ATR. Lo stop non torna mai indietro; cancel-then-place con rete di
+    sicurezza: se il place fallisce, il reconcile ri-attacha il vecchio stop.
+    Ritorna il numero di stop spostati."""
+    ch = c.clearinghouse_state(cfg.wallet)
+    live = {p["position"]["coin"]: p["position"]
+            for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
+    mids = c.all_mids()
+    moved = 0
+    for it in store.intents_open():
+        if it["coin"] not in live:
+            continue
+        t0 = _ts(it["ts"])
+        if not t0:
+            continue  # ts imparsabile: finestra peak inaffidabile, niente trailing
+        h1_all = c.candles_cached(it["coin"], "1h", 7 * 24 * 3600 * 1000)
+        h1 = [k for k in h1_all if k["t"] / 1000 >= t0 - 3600]
+        mark = float(mids[it["coin"]])
+        vals = [k["h"] for k in h1] if it["side"] == "long" else [k["l"] for k in h1]
+        vals.append(mark)
+        if it["peak_price"]:
+            vals.append(it["peak_price"])
+        peak = max(vals) if it["side"] == "long" else min(vals)
+        if peak != it["peak_price"]:
+            store.intent_set_peak(it["id"], peak)
+        cand = trailing_candidate(it["side"], it["entry_px"], it["stop_px"],
+                                  mark, signal.atr14(h1_all) or 0, peak,
+                                  mult=cfg.atr_stop_mult)
+        if cand is None:
+            continue
+        if it["stop_oid"]:
+            r = ex.cancel_order(it["coin"], it["stop_oid"])
+            if str(r.get("status", "")).lower() != "canceled":
+                log(f"[Trailing] {it['coin']}: cancel vecchio stop "
+                    f"{it['stop_oid']} = {r.get('status')}; riprovo al ciclo dopo")
+                continue
+        close_side = "short" if it["side"] == "long" else "long"
+        r = ex.place_trigger(it["coin"], close_side, it["qty"], cand, tpsl="sl")
+        if r.get("status") == "resting":
+            store.intent_move_stop(it["id"], cand, r["oid"])
+            moved += 1
+            log(f"[Trailing] {it['coin']} {it['side'].upper()}: stop "
+                f"{it['stop_px']:g} -> {cand:g} @ oid {r['oid']}")
+        else:
+            # vecchio stop gia' cancellato: il reconcile ri-attacha quello nel DB
+            log(f"[Trailing] ATTENZIONE {it['coin']}: place nuovo stop = "
+                f"{r.get('status')} {r.get('error', '')}; reconcile ri-attacha")
+    return moved
+
+
 def run_cycle(cfg, c, ex, coin, pre=None):
     """Un ciclo completo su un coin: dati->segnale->grafo->rischio->
     esecuzione+stop->verifica. Ritorna dict esito (per test/report)."""
     t_start = time.time()
-    if any(i["coin"] == coin for i in store.intents_open()):
-        return {"coin": coin, "ofi_z": None, "conviction": None,
-                "executed": False, "reason": "posizione gia' aperta"}
+    held_it = next((dict(i) for i in store.intents_open() if i["coin"] == coin),
+                   None)
+    # NB: nessun early-return qui: con segnale opposto il grafo decide se chiudere
     pre = pre or gather(cfg, c, coin)
     ctx, mid = pre["ctx"], float(pre["mid"])
     h1, h4, d1, trades = pre["h1"], pre["h4"], pre["d1"], pre["trades"]
@@ -194,6 +308,9 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     if conv == 0:
         return done(False, f"|OFI_z|={abs(z):.2f} < soglia {cfg.signal_z_min}")
     quant_side = "long" if z > 0 else "short"
+    if held_it and held_it["side"] == quant_side:
+        return {"coin": coin, "mid": mid, "ofi_z": round(z, 3), "conviction": conv,
+                "executed": False, "reason": "posizione gia' aperta (stesso verso)"}
 
 
     # ---- contesto rischio per la scelta leva del PM (decisa dal grafo) ----
@@ -230,7 +347,21 @@ def run_cycle(cfg, c, ex, coin, pre=None):
               "panel": g["panel"], "debate": g["debate"],
               "llm_ms": round((time.time() - _t) * 1000)}
     llm_side, rationale = gextra["llm_side"], gextra["rationale"]
-    if llm_side == "flat":
+    if held_it:
+        rev = reversal_decision(held_it["side"], llm_side,
+                                g["decision"].get("confidence"))
+        if rev != "fire":
+            why = ("PM flat" if llm_side == "flat" else
+                   f"PM {llm_side} ma conf <{REVERSAL_CONF_MIN}" if rev == "weak"
+                   else f"PM conferma {held_it['side']}")
+            return done(False, f"posizione {held_it['side']} tenuta ({why})", gextra)
+        sgn_h = 1 if held_it["side"] == "long" else -1
+        pnl_est = (mid - held_it["entry_px"]) * held_it["qty"] * sgn_h
+        log(f"[cycle] REVERSAL {coin}: PM {llm_side} (conf "
+            f"{g['decision'].get('confidence')}) -> chiudo {held_it['side']} "
+            f"(PnL ${pnl_est:+,.2f})")
+        close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
+    elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
         return done(False, f"LLM {llm_side} contro segnale {quant_side}", gextra)
@@ -297,8 +428,9 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     })
 
 
-def close_position(c, cfg, ex, it):
-    """Chiude una posizione a mercato (reduce-only) e cancella lo stop resting."""
+def close_position(c, cfg, ex, it, reason="chiusura-manuale"):
+    """Chiude a mercato (reduce-only), cancella lo stop resting e archivia
+    l'intento con reason (chiusura-manuale | signal-reversal)."""
     if it.get("stop_oid"):
         try:
             ex.cancel_order(it["coin"], it["stop_oid"])
@@ -321,8 +453,14 @@ def close_position(c, cfg, ex, it):
         log(f"[close] ATTENZIONE {it['coin']}: chiusura fallita "
             f"({fill['status']}); intento #{it['id']} resta aperto")
         return
-    store.intent_close(it["id"], "chiusura-manuale")
-    log(f"[close] {it['coin']} {qty} {side} -> filled @ {fill.get('avg_px')}")
+    store.intent_close(it["id"], reason)
+    px = float(fill.get("avg_px") or 0)
+    sgn = 1 if float(pos["szi"]) > 0 else -1
+    est = (px - float(pos["entryPx"])) * qty * sgn
+    kind = {"signal-reversal": "SIGNAL_REVERSAL",
+            "chiusura-manuale": "MANUAL"}.get(reason, reason.upper())
+    log(f"[CLOSE] {it['coin']} {'LONG' if sgn > 0 else 'SHORT'}: {kind} "
+        f"@ {px:g} (PnL ${est:+,.2f})")
 
 
 def _write_screener_json(rows, funnel, triggered=()):
@@ -360,7 +498,7 @@ def main(argv=None):
     while True:
         try:
             reconcile(c, cfg, ex)
-            t_cycle = time.time()
+            maintain_trailing(c, cfg, ex)
             mids = c.all_mids()
             _, n_perp, n_spot = registry.universe(c)
             log(f"[universe] {n_perp} perp + {n_spot} spot; mids {len(mids)}")

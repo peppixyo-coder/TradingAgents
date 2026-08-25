@@ -497,6 +497,7 @@ def main(argv=None):
 
     while True:
         try:
+            t_cycle = time.time()
             reconcile(c, cfg, ex)
             maintain_trailing(c, cfg, ex)
             mids = c.all_mids()

@@ -73,6 +73,7 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
     t0 = dt.datetime.now()
     final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
 
+    side, conf = _RATING.get(str(rating).strip().lower(), ("flat", 0.0))
     # ponytail: leva fornita alla frontiera - il prompt upstream esclude la
     # leva dal PM ("risk manager separato", righe sopra); default prudente
     # per classe, sostituisci con leva scelta dal PM quando i prompt la

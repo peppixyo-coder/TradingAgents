@@ -31,6 +31,8 @@ class HyPaperClient:
         self.s = requests.Session()
         self._meta = None
         self._meta_ts = 0.0
+        self._mids_hip = None
+        self._mids_ts = 0.0
 
     def _post(self, path, payload, timeout=15):
         last = None
@@ -63,14 +65,34 @@ class HyPaperClient:
         return self._meta
 
     def asset_index(self, coin):
-        """(indice, entry universo) per coin; solleva KeyError se assente."""
+        """(asset id wire, entry universo); copre anche i nomi "{dex}:{COIN}"."""
         for i, u in enumerate(self.meta()["universe"]):
             if u["name"] == coin:
                 return i, u
-        raise KeyError(coin)
+        from . import registry
+        e = registry.universe(self)[0].get(coin)
+        if not e:
+            raise KeyError(coin)
+        idx = e["index"] if not e["dex"] else \
+            100000 + e["dex_idx"] * 10000 + e["index"]
+        return idx, e
 
     def all_mids(self):
-        return self._post("/info", {"type": "allMids"})
+        return {**self._post("/info", {"type": "allMids"}), **self.hip_mids()}
+
+    def hip_mids(self, ttl=300):
+        """Mids dei soli dex HIP-3 (allMids globale non li copre), cache 5min."""
+        if self._mids_hip is None or time.time() - self._mids_ts > ttl:
+            from . import registry
+            merged = {}
+            for dex in sorted({e["dex"] for e in registry.universe(self)[0].values()
+                               if e["dex"]}):
+                try:
+                    merged.update(self._post("/info", {"type": "allMids", "dex": dex}))
+                except Exception:
+                    pass  # ponytail: dex assente/transitorio -> i suoi coin restano senza mid e fuori dal ciclo; rimuovere il try quando HL garantisce coerenza per-dex.
+            self._mids_hip, self._mids_ts = merged, time.time()
+        return self._mids_hip
 
     def asset_ctxs(self):
         return self._post("/info", {"type": "metaAndAssetCtxs"})

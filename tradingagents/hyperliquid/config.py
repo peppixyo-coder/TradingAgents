@@ -35,9 +35,14 @@ def load() -> HLConfig:
     # sola all'import, prima di load_dotenv() -> le var di .env verrebbero ignorate.
     return HLConfig(
         hypaper_url=os.getenv("HYPAPER_URL", "http://localhost:3000").rstrip("/"),
-        router_url=os.getenv("OPENAI_BASE_URL", "http://localhost:20128/v1").rstrip("/"),
+        # Sorgente unica T24: le var TRADINGAGENTS_* del grafo upstream; i
+        # vecchi nomi restano fallback per compatibilità.
+        router_url=os.getenv(
+            "TRADINGAGENTS_LLM_BACKEND_URL",
+            os.getenv("OPENAI_BASE_URL", "http://localhost:20128/v1"),
+        ).rstrip("/"),
         api_key=os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("TRADINGAGENTS_MODEL", "Combo-1"),
+        model=os.getenv("TRADINGAGENTS_QUICK_THINK_LLM", os.getenv("TRADINGAGENTS_MODEL", "Combo-1")),
         trading_mode=os.getenv("TRADING_MODE", "paper"),
         wallet=os.getenv("HYPAPER_WALLET", "spike-agent-01"),
         paper_seed_balance=float(os.getenv("PAPER_SEED_BALANCE", "10000")),

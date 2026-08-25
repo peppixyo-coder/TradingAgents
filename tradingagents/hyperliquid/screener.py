@@ -40,17 +40,27 @@ def age_days(c, coin):
 
 def screene(c, mids):
     """(passati [{coin, mid, chg24h, vol24h, oi, funding, spread_bps, ctx}], funnel)."""
+    from . import registry
     meta, ctxs = c.asset_ctxs()
-    funnel = {"universo": sum(1 for u in meta["universe"] if not u.get("isDelisted"))}
+    pairs = [(u["name"], ctx) for u, ctx in zip(meta["universe"], ctxs)
+             if not u.get("isDelisted")]
+    for dex in sorted({e["dex"] for e in registry.universe(c)[0].values() if e["dex"]}):
+        try:
+            dm, dctxs = c._post("/info", {"type": "metaAndAssetCtxs", "dex": dex})
+        except Exception:
+            continue  # ponytail: dex transitorio -> saltato dal funnel; loggare quando il funnel diventa metrico.
+        pairs += [(u["name"] if ":" in u["name"] else f"{dex}:{u['name']}", x)
+                  for u, x in zip(dm["universe"], dctxs) if not u.get("isDelisted")]
+    funnel = {"universo": len(pairs)}
     rows = []
-    for u, ctx in zip(meta["universe"], ctxs):
-        name = u["name"]
-        if u.get("isDelisted") or name not in mids:
+    for name, ctx in pairs:
+        if name not in mids:
             continue
         mid = float(mids[name])
         if is_stable(name, mid):
             continue
         rows.append({"coin": name, "mid": mid,
+                     "asset_class": registry.universe(c)[0][name]["asset_class"],
                      "vol24h": float(ctx["dayNtlVlm"]),
                      "oi": float(ctx["openInterest"]) * mid,
                      "funding": float(ctx["funding"]),

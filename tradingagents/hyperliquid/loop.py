@@ -20,7 +20,7 @@ import os
 import sys
 import time
 
-from . import analysts, registry, risk, scanner, screener, signal, store
+from . import analysts, pipelines, registry, risk, scanner, screener, signal, store
 from .config import load
 from .data import HyPaperClient, collect_trades_multi, fng, rss_headlines
 from .executor import HyperliquidExecutor
@@ -93,7 +93,7 @@ def reversal_decision(held_side, llm_side, confidence,
 
 def load_dotenv(path=None):
     """Minimo loader stdlib: KEY=VAL, #commenti; non sovrascrive l'ambiente."""
-    path = path or os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+    path = path or os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env")
     try:
         with open(path) as f:
             for line in f:
@@ -448,7 +448,11 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         f"News: " + " | ".join(heads[:4])
     )
     _t = time.time()
-    g = analysts.run_graph(cfg, blob)
+    micro = {"funding_ann%": round(float(ctx['funding']) * 24 * 365 * 100, 2),
+             "oi_usd": float(ctx['openInterest']) * mid,
+             "vol_24h_usd": float(ctx['dayNtlVlm']),
+             "sigma_ann": sigma, "atr_1h": atr, "regime": reg, "ofi_z": z}
+    g = pipelines.run_pipeline(cfg, coin, blob, micro=micro)
     gextra = {"llm_side": g["decision"]["side"], "rationale": g["decision"].get("rationale", ""),
               "panel": g["panel"], "debate": g["debate"],
               "llm_ms": round((time.time() - _t) * 1000)}

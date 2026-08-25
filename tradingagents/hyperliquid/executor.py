@@ -59,7 +59,9 @@ class HyperliquidExecutor:
                 f"TRADING_MODE={cfg.trading_mode}: transport live richiede go esplicito dell'umano")
 
     def set_leverage(self, coin, leverage, is_cross=True):
-        idx, _ = self.c.asset_index(coin)
+        idx, uni = self.c.asset_index(coin)
+        if uni.get("onlyIsolated"):  # HIP-3: il mercato non ammette cross
+            is_cross = False
         try:
             return self.c._post("/exchange", {
                 "wallet": self.cfg.wallet,

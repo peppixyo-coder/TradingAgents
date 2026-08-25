@@ -6,6 +6,7 @@ Ogni check e' la chiamata REALE che il loop fara' in produzione: niente mock.
 import json
 import os
 import shutil
+import sys
 import urllib.request
 
 from . import store

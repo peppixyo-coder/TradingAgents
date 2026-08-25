@@ -34,7 +34,8 @@ HL_WS_URL = "wss://api.hyperliquid.xyz/ws"
 TAKER_FEE = 0.00035  # stima: entrambe le gambe market/IOC
 _CLOSE_KIND = {"stop-loss": "STOP", "trailing-stop": "TRAILING",
                "signal-reversal": "REVERSAL", "chiusura-manuale": "MANUAL",
-               "position-gone": "STOP"}
+               "position-gone": "STOP", "take-profit-full": "TP_FULL",
+               "partial-tp-stop": "TP_PARTIAL+STOP"}
 
 
 def _parse_ts(s):
@@ -42,6 +43,20 @@ def _parse_ts(s):
         return time.mktime(time.strptime(s, TS_FMT))
     except (ValueError, TypeError):
         return None
+
+
+def _tp_view(it):
+    """Ladder TP dell'intento per la dashboard: [{n, px, sz, state}]."""
+    out = []
+    if it:
+        for n in (1, 2, 3):
+            if it[f"tp{n}_px"] is not None:
+                filled = int(it[f"tp{n}_filled"] or 0)
+                out.append({"n": n, "px": float(it[f"tp{n}_px"]),
+                            "sz": float(it[f"tp{n}_size"] or 0),
+                            "state": "filled" if filled else
+                                     ("pending" if it[f"tp{n}_oid"] else "off")})
+    return out
 
 
 class Agg:
@@ -162,6 +177,7 @@ class Agg:
                 "uPnLPct": round(upnl / (entry * abs(sz)) * 100, 2) if entry else 0,
                 "stop": it.get("stop_px"),
                 "durS": int(now - _parse_ts(it["ts"])) if it.get("ts") else None,
+                "tps": _tp_view(it),
             })
         out.sort(key=lambda x: x["uPnLPct"], reverse=True)
         return out
@@ -260,6 +276,9 @@ class Agg:
             "marginUsed": sum(p["szi"] * p["mark"] / max(1, p["lev"]) for p in pl),
             "levTot": sum(p["szi"] * p["mark"] for p in pl) / eq_now if eq_now else 0,
             "winRate": len(wins) / len(closed) * 100 if closed else None,
+            "tpHitRates": [round(sum(1 for t in closed if n in t["tpsHitList"])
+                                 / len(closed) * 100, 1)
+                           if closed else None for n in (1, 2, 3)],
             "wins": len(wins), "losses": len(losses), "closes": len(closed),
             "profitFactor": gp / gl if gl > 0 else (None if gp == 0 else 99.0),
             "maxDD": max_dd * 100, "ddNow": dd_at_end * 100,
@@ -388,6 +407,12 @@ class Agg:
             # ponytail: fee stimata taker (0.035%) su entrambe le gambe; HyPaper non
             # espone i fill reali (userFills rotto). Upgrade: sink Postgres HyPaper.
             fee = round((entry + (xp or entry)) * qty * TAKER_FEE, 4) if xp else None
+            hit = [n for n in (1, 2, 3) if int(it[f"tp{n}_filled"] or 0)]
+            tps = [{"n": n, "px": float(it[f"tp{n}_px"])}
+                   for n in (1, 2, 3) if it[f"tp{n}_px"]]
+            pnl_tps = round(sum((float(it[f"tp{n}_px"]) - entry)
+                                * float(it[f"tp{n}_size"] or 0) * sgn
+                                for n in hit), 2) if xp and hit else None
             out.append({
                 "id": it["id"], "coin": it["coin"], "side": it["side"],
                 "qty": qty, "notional": entry * qty,
@@ -398,6 +423,10 @@ class Agg:
                 "debate": rec.get("debate"),
                 "tsOpen": it["ts"], "tsClose": it["closed_ts"],
                 "durS": int(tcs - t0i) if tcs else None,
+                "tpsHitList": hit, "tps": tps,
+                "pnlTps": pnl_tps,
+                "pnlResidual": round(pnl - pnl_tps, 2)
+                if pnl is not None and pnl_tps is not None else None,
                 "closeReason": it["close_reason"] or ("stop" if xp else None),
                 "closeKind": _CLOSE_KIND.get((it["close_reason"] or "").strip().lower()),
                 "status": "open" if it["status"] == "open" else "closed",
@@ -635,7 +664,8 @@ async def startup():
 
 
 import faulthandler
-faulthandler.register(signal.SIGUSR1)
+if hasattr(signal, "SIGUSR1"):  # POSIX only; Windows import altrimenti rompe i test
+    faulthandler.register(signal.SIGUSR1)
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

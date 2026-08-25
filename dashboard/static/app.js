@@ -229,7 +229,11 @@ function renderPositions() {
     <td>${num(p.szi, 4)}</td><td>${px(p.entry)}</td><td>${px(p.mark)}</td>
     <td>${p.lev}x</td><td class="${cls(p.uPnL)}">${usd(p.uPnL)}</td>
     <td class="${cls(p.uPnLPct)}">${pct(p.uPnLPct)}</td>
-    <td>${p.stop ? px(p.stop) : "—"}</td><td>${dur(p.durS)}</td></tr>`).join("");
+    <td>${p.stop ? px(p.stop) : "—"}</td>
+    <td class="sans">${(p.tps || []).map(t =>
+      `<span style="color:${t.state === "filled" ? "#26A69A" :
+        t.state === "pending" ? "#8AB4F8" : "#7d8590"}">TP${t.n} ${px(t.px)}</span>`
+    ).join(" ") || "—"}</td><td>${dur(p.durS)}</td></tr>`).join("");
 }
 function renderLastCycle() {
   const r = S.agents.lastCycle; if (!r) { $("#last-cycle").innerHTML = "<p class='empty'>nessun ciclo registrato.</p>"; return; }
@@ -299,7 +303,9 @@ function toggleTradeRow(tr) {
   tr2.innerHTML = `<td colspan="13"><div class="detail-grid">
     <div><h3 class="card-h" style="margin-top:0">Decisione</h3><div class="kv cols">${kv([
       ["Confidence", t.confidence ?? "—"], ["Stop teorico", t.stop ? px(t.stop) : "—"],
-      ["Fee", t.fee != null ? usd(t.fee) : "—"], ["Chiuso", t.tsClose || "aperto"]])}</div>
+      ["Fee", t.fee != null ? usd(t.fee) : "—"], ["Chiuso", t.tsClose || "aperto"],
+      ["PnL da TP", t.pnlTps != null ? usd(t.pnlTps) : "—"],
+      ["PnL residuo (stop)", t.pnlResidual != null ? usd(t.pnlResidual) : "—"]])}</div>
       <div class="box" style="margin-top:8px">${esc(t.rationale || "—")}</div></div>
     <div><h3 class="card-h" style="margin-top:0">Panel</h3>
       <div class="box">${esc(p.bull || "—")}</div>
@@ -351,6 +357,7 @@ function renderAnStats(cl) {
   const wins = cl.filter(t => t.pnl > 0), losses = cl.filter(t => t.pnl < 0);
   $("#an-stats").innerHTML = "<h3>Resoconto</h3>" + kv([
     ["Trade chiusi", cl.length], ["Win/Loss", `${wins.length}/${losses.length}`],
+    ["TP hit 1/2/3", (k.tpHitRates || []).map(r => r == null ? "—" : r + "%").join(" / ")],
     ["Profit factor", num(k.profitFactor, 2)], ["Avg win", usd(k.avgWin)],
     ["Avg loss", usd(k.avgLoss)], ["Risk:Reward", num(k.riskReward, 2)],
     ["Realizzato tot.", `<span class="${cls(k.realizedTot)}">${usd(k.realizedTot)}</span>`],
@@ -521,7 +528,8 @@ function renderSystem() {
 function exportCsv() {
   const rows = filteredTrades();
   const cols = ["id", "coin", "side", "qty", "notional", "entry", "exit", "stop", "pnl",
-    "pnlPct", "fee", "confidence", "durS", "closeKind", "closeReason", "status", "tsOpen", "tsClose"];
+    "pnlTps", "pnlResidual", "pnlPct", "fee", "confidence", "durS", "closeKind",
+    "closeReason", "status", "tsOpen", "tsClose"];
   const csv = [cols.join(",")].concat(rows.map(t => cols.map(c =>
     JSON.stringify(t[c] ?? "")).join(","))).join("\n");
   const a = document.createElement("a");

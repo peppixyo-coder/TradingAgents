@@ -53,9 +53,10 @@ def check_rest(checks):
         checks.append(("rest:/api/snapshot valido", False, repr(e)))
         return
     kpis = s.get("kpis") or {}
+    empty_ok = ("winRate", "profitFactor")  # undefined finché non chiude trade
     for f in KPI_FIELDS:
         v = kpis.get(f)
-        checks.append((f"kpi:{f}", not bad(v), v))
+        checks.append((f"kpi:{f}", not bad(v) or (v is None and f in empty_ok), v))
     positions = s.get("positions") or []
     checks.append(("positions:n", isinstance(positions, list), len(positions)))
     for p in positions:
@@ -93,10 +94,17 @@ def check_ws(checks):
         asyncio.run(_collect_ws(frames, want_s=15))
     except Exception as e:
         checks.append(("ws:connesso+frame", False, repr(e)))
-        return
     ticks = [f for f in frames if f.get("t") == "tick"]
     metrics = [f for f in frames if f.get("t") == "metrics"]
-    checks.append(("ws:tick_frame_1s", bool(ticks), len(ticks)))
+    n_pos = 0
+    try:
+        n_pos = len(requests.get(f"{BASE}/api/snapshot", headers=HDRS,
+                                 timeout=30).json().get("positions") or [])
+    except Exception:
+        pass
+    # fast_loop emette tick solo con posizioni aperte: libro vuoto = 0 tick ok
+    checks.append(("ws:tick_frame_1s", bool(ticks) or n_pos == 0,
+                   f"{len(ticks)} tick, {n_pos} pos"))
     checks.append(("ws:metrics_frame_5s", bool(metrics), len(metrics)))
     if not metrics:
         return

@@ -60,12 +60,24 @@ def init():
             conn.execute("ALTER TABLE intents ADD COLUMN leverage REAL")
         except sqlite3.OperationalError:
             pass
-        for col, typ in (("peak_price", "REAL"),          # massimo favorevole toccato
-                         ("trailing_active", "INTEGER NOT NULL DEFAULT 0")):
+        cols = (("peak_price", "REAL"),                  # massimo favorevole toccato
+                ("trailing_active", "INTEGER NOT NULL DEFAULT 0"),
+                ("original_size", "REAL"),               # size iniziale completa
+                ("remaining_size", "REAL"),              # size residua dopo TP parziali
+                ("tp1_px", "REAL"), ("tp1_size", "REAL"),
+                ("tp1_oid", "INTEGER"), ("tp1_filled", "INTEGER NOT NULL DEFAULT 0"),
+                ("tp2_px", "REAL"), ("tp2_size", "REAL"),
+                ("tp2_oid", "INTEGER"), ("tp2_filled", "INTEGER NOT NULL DEFAULT 0"),
+                ("tp3_px", "REAL"), ("tp3_size", "REAL"),
+                ("tp3_oid", "INTEGER"), ("tp3_filled", "INTEGER NOT NULL DEFAULT 0"))
+        for col, typ in cols:
             try:
                 conn.execute(f"ALTER TABLE intents ADD COLUMN {col} {typ}")
             except sqlite3.OperationalError:
                 pass
+        # backfill DB esistenti: remaining = qty finche' un TP non taglia
+        conn.execute("UPDATE intents SET original_size=qty, remaining_size=qty "
+                     "WHERE original_size IS NULL")
 
 
 def kv_get(k, default=None):
@@ -83,10 +95,10 @@ def kv_set(k, v):
 def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None, leverage=None):
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid,leverage) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid,leverage,"
+            "original_size,remaining_size) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (time.strftime("%Y-%m-%dT%H:%M:%S%z"), coin, side, qty,
-             entry_px, stop_px, fill_oid, leverage))
+             entry_px, stop_px, fill_oid, leverage, qty, qty))
         return cur.lastrowid
 
 
@@ -126,6 +138,27 @@ def intent_move_stop(intent_id, stop_px, stop_oid):
 def intent_set_peak(intent_id, peak):
     with connect() as conn:
         conn.execute("UPDATE intents SET peak_price=? WHERE id=?", (peak, intent_id))
+
+
+def intent_set_tp(intent_id, n, px, sz, oid):
+    """Registra livello TP n (1..3): prezzo pianificato, size e oid resting."""
+    with connect() as conn:
+        conn.execute(f"UPDATE intents SET tp{n}_px=?, tp{n}_size=?, tp{n}_oid=? "
+                     "WHERE id=?", (px, sz, oid, intent_id))
+
+
+def intent_mark_tp(intent_id, n):
+    """Marca il livello n come fillato e ne azzera l'oid (ordine consumato)."""
+    with connect() as conn:
+        conn.execute(f"UPDATE intents SET tp{n}_filled=1, tp{n}_oid=NULL WHERE id=?",
+                     (intent_id,))
+
+
+def intent_set_remaining(intent_id, qty):
+    """Sincronizza la size residua con la clearinghouse (dopo fill TP)."""
+    with connect() as conn:
+        conn.execute("UPDATE intents SET remaining_size=? WHERE id=?",
+                     (qty, intent_id))
 
 
 _last_backup_ts = 0.0

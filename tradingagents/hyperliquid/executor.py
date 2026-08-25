@@ -40,6 +40,16 @@ def _fmt_sz(q, sz_decimals):
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
+
+TP_FRACS = (0.40, 0.30, 0.30)   # TP1 conservativo, TP2 corpo, TP3 coda destra
+TP_MULTS = (1.5, 3.0, 5.0)      # distanze in ATR dall'entry
+
+
+def tp_levels(side, entry_px, atr):
+    """Prezzi TP1/TP2/TP3: 1.5/3/5 ATR nella direzione del profitto."""
+    sgn = 1 if side == "long" else -1
+    return [round(entry_px + sgn * m * atr, 6) for m in TP_MULTS]
+
 class HyperliquidExecutor:
     def __init__(self, client: HyPaperClient, cfg):
         self.c = client
@@ -167,6 +177,80 @@ class HyperliquidExecutor:
                "status": "canceled" if ok else "error", "raw": st}
         self._log(out)
         return out
+
+    def place_limit(self, coin, side, qty, limit_px):
+        """Limit GTC reduce-only resting (i TP): filla quando il mid attraversa
+        il prezzo; HyPaper clamp la size alla posizione (engine/order.ts +
+        worker/order-matcher.ts). Ritorna normalizzato come place_trigger."""
+        if side not in ("long", "short") or qty <= 0 or limit_px <= 0:
+            raise ValueError(f"limit non valido: {side}, {qty}, {limit_px}")
+        idx, uni = self.c.asset_index(coin)
+        wire = {
+            "a": idx,
+            "b": side == "long",
+            "p": _fmt_px(limit_px, uni.get("szDecimals", 5)),
+            "s": _fmt_sz(qty, uni.get("szDecimals", 5)),
+            "r": True,
+            "t": {"limit": {"tif": "Gtc"}},
+        }
+        t0 = time.time()
+        resp = self.c._post("/exchange", {
+            "wallet": self.cfg.wallet,
+            "action": {"type": "order", "orders": [wire], "grouping": "na"},
+        }, timeout=30)
+        out = {"coin": coin, "side": side, "limit_px": limit_px, "wire": wire,
+               "latency_ms": int((time.time() - t0) * 1000)}
+        st = ((resp.get("response", {}) or {}).get("data", {}) or {}).get("statuses", [{}])
+        st = st[0] if st else {}
+        if isinstance(st, str):
+            out.update(status="success")
+        elif "resting" in st:
+            out.update(status="resting", oid=st["resting"].get("oid"))
+        elif "filled" in st:                      # mid gia' oltre il livello
+            f = st["filled"]
+            out.update(status="filled", avg_px=float(f["avgPx"]),
+                       filled_sz=float(f["totalSz"]), oid=f.get("oid"))
+        else:
+            out.update(status="error", error=str(st.get("error", st)))
+        self._log(out)
+        return out
+
+    def place_tp_orders(self, coin, side, qty, entry_px, atr, uni=None):
+        """Piazza la scala TP1/TP2/TP3 (40/30/30% della size, floor al lotto).
+        Ritorna [{n, px, sz, oid?, status}] solo per i livelli con size > 0."""
+        if not (atr and atr > 0) or qty <= 0:
+            return []
+        _, u = self.c.asset_index(coin)
+        step = 10 ** -int((uni or u).get("szDecimals", 5))
+        out = []
+        for n, (px, frac) in enumerate(zip(tp_levels(side, entry_px, atr), TP_FRACS), 1):
+            sz = math.floor(qty * frac / step + 1e-12) * step
+            if sz <= 0:
+                continue
+            r = self.place_limit(coin, "short" if side == "long" else "long", sz, px)
+            row = {"n": n, "px": px, "sz": sz,
+                   "status": r.get("status"), "oid": r.get("oid"),
+                   "error": r.get("error")}
+            out.append(row)
+            log_line = (f"[TP{n}] {coin} {side.upper()}: {row['status']} "
+                        f"{sz:g} @ {px:g} oid={row['oid'] or row['error']}")
+            print(log_line)
+        return out
+
+    def cancel_tp_orders(self, coin, oids):
+        """Cancella i TP resting (stop uscito / chiusura manuale). Tollerante:
+        un oid gia' consumato o assente non e' un errore."""
+        canceled = []
+        for oid in oids:
+            if not oid:
+                continue
+            try:
+                r = self.cancel_order(coin, oid)
+                if str(r.get("status", "")).lower().startswith("canceled"):
+                    canceled.append(oid)
+            except Exception:  # noqa: BLE001 - ordine forse gia' partito
+                pass
+        return canceled
 
     @staticmethod
     def _log(row):

@@ -65,8 +65,14 @@ def trailing_candidate(side, entry, cur_stop, mark, atr, extreme,
 
 
 def exit_reason_for(it):
-    """position-gone -> motivo: trailing se attivo con stop oltre l'entry
-    (chiusura in profitto), altrimenti stop-loss."""
+    """position-gone -> motivo: tp-full se tutti i TP sono passati,
+    partial-tp-stop se almeno un TP e' fillato e lo stop ha chiuso il resto,
+    trailing se attivo con stop oltre l'entry, altrimenti stop-loss."""
+    n_tp = sum(1 for n in (1, 2, 3) if int(it.get(f"tp{n}_filled") or 0))
+    if n_tp == 3:
+        return "tp-full"
+    if n_tp:
+        return "partial-tp-stop"
     if int(it.get("trailing_active") or 0) and \
             ((it["side"] == "long") == (it["stop_px"] > it["entry_px"])):
         return "trailing-stop"
@@ -142,15 +148,109 @@ def _has_live_stop(c, cfg, coin):
 
 
 def attach_stop(ex, intent):
-    """Attacca (o ri-attacca) lo SL nativo per un intento; registra l'oid."""
+    """Attacca (o ri-attacca) lo SL nativo per un intento; registra l'oid.
+    Size = remaining_size (post-TP parziali), fallback qty per intenti legacy."""
     close_side = "short" if intent["side"] == "long" else "long"
-    r = ex.place_trigger(intent["coin"], close_side, intent["qty"],
+    q = intent.get("remaining_size") or intent["qty"]
+    r = ex.place_trigger(intent["coin"], close_side, q,
                          intent["stop_px"], tpsl="sl")
     log(f"  stop {'attachato' if r['status'] == 'resting' else 'ESITO ' + r['status']}: "
         f"{r.get('oid') or r.get('error')} @ {intent['stop_px']}")
     if r["status"] == "resting":
         store.intent_attach_stop(intent["id"], r["oid"])
     return r
+
+
+def _cancel_resting_tps(ex, it):
+    """Cancella i TP ancora resting (stop uscito / chiusura manuale / reversal):
+    su posizione piatta resterebbero ordini morti nel book."""
+    gone = ex.cancel_tp_orders(it["coin"],
+                               [it.get(f"tp{n}_oid") for n in (1, 2, 3)])
+    if gone:
+        log(f"[TP] {it['coin']}: cancel {len(gone)} TP resting")
+
+
+def move_stop_to_breakeven(c, cfg, ex, it):
+    """Dopo TP1: stop a entry (risk-free sul residuo). Come il trailing:
+    cancel-then-place; no-op se lo stop e' gia' oltre l'entry."""
+    behind = it["stop_px"] < it["entry_px"] if it["side"] == "long" \
+        else it["stop_px"] > it["entry_px"]
+    if not behind:
+        return False
+    if it.get("stop_oid"):
+        r = ex.cancel_order(it["coin"], it["stop_oid"])
+        if str(r.get("status", "")).lower() != "canceled":
+            log(f"[TP] {it['coin']}: cancel stop per BE = {r.get('status')}; "
+                f"riprovo al prossimo ciclo")
+            return False
+    q = it.get("remaining_size") or it["qty"]
+    close_side = "short" if it["side"] == "long" else "long"
+    r = ex.place_trigger(it["coin"], close_side, q, it["entry_px"], tpsl="sl")
+    if r.get("status") != "resting":
+        log(f"[TP] ATTENZIONE {it['coin']}: place BE = {r.get('status')} "
+            f"{r.get('error', '')}; reconcile ri-attacha il vecchio stop")
+        return False
+    store.intent_move_stop(it["id"], it["entry_px"], r["oid"])
+    log(f"[TP] {it['coin']}: stop -> breakeven {it['entry_px']:g} @ oid {r['oid']}")
+    return True
+
+
+def maintain_tps(c, cfg, ex):
+    """Cuore della scala TP: confronta |szi| clearinghouse con remaining_size,
+    marca i fill (sequenziali, gestisce gap multi-livello sulla stessa candela),
+    aggiorna remaining e porta lo stop a breakeven dopo TP1. Ri-piazza i livelli
+    pianificati mai resting (crash tra place e store). Idempotente.
+    ponytail: un TP il cui place e' riuscito ma la risposta persino resta orfano
+    nel book (reduce-only, clampato: innocuo) - rilevarlo richiederebbe un match
+    su frontendOpenOrders; aggiungere solo se si manifesta.
+    Ritorna (numero fill rilevati, numero BE move)."""
+    ch = c.clearinghouse_state(cfg.wallet)
+    live = {p["position"]["coin"]: abs(float(p["position"]["szi"]))
+            for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
+    fills = be_moves = 0
+    for _row in store.intents_open():
+        it = dict(_row)
+        planned = [n for n in (1, 2, 3)
+                   if it[f"tp{n}_px"] and not int(it[f"tp{n}_filled"] or 0)]
+        if not planned:
+            continue
+        side = it["side"]
+        opp = "short" if side == "long" else "long"
+        sgn = 1 if side == "long" else -1
+        rem = float(it["remaining_size"] or it["qty"])
+        szi = live.get(it["coin"], 0.0)
+        closed = rem - szi
+        eps = max(1e-12, rem * 1e-9)
+        if closed <= eps:
+            # nessun fill nuovo: ri-piazza eventuali livelli pianificati senza oid
+            for n in [n for n in planned if not it[f"tp{n}_oid"]]:
+                r = ex.place_limit(it["coin"], opp, float(it[f"tp{n}_size"]),
+                                   float(it[f"tp{n}_px"]))
+                ok = r.get("status") in ("resting", "filled", "success")
+                log(f"[TP] {it['coin']}: re-place TP{n} @ {it[f'tp{n}_px']:g} "
+                    f"-> {r.get('status')} {r.get('error', '')}")
+                if ok:
+                    store.intent_set_tp(it["id"], n, it[f"tp{n}_px"],
+                                        it[f"tp{n}_size"], r.get("oid"))
+            continue
+        cur = dict(it)                       # vista con remaining aggiornato
+        for n in planned:                    # sequenziale: TP1 prima di TP2...
+            sz_n = float(it[f"tp{n}_size"] or 0)
+            if sz_n <= 0 or closed + eps < sz_n:
+                break                        # fill parziale: il resto al prox ciclo
+            store.intent_mark_tp(it["id"], n)
+            closed -= sz_n
+            fills += 1
+            pnl_n = (float(it[f"tp{n}_px"]) - it["entry_px"]) * sz_n * sgn
+            log(f"[TP{n}] {it['coin']} {side.upper()} FILLED: {sz_n:g} @ "
+                f"{float(it[f'tp{n}_px']):g} (PnL ${pnl_n:+,.2f})")
+            cur["remaining_size"] = max(0.0, rem - sz_n)
+            rem = cur["remaining_size"]
+            if n == 1:
+                be_moves += 1 if move_stop_to_breakeven(c, cfg, ex, cur) else 0
+        if abs(szi - (it["remaining_size"] or it["qty"])) > eps:
+            store.intent_set_remaining(it["id"], round(szi, 12))
+    return fills, be_moves
 
 
 def reconcile(c, cfg, ex):
@@ -162,11 +262,14 @@ def reconcile(c, cfg, ex):
         if float(pos["szi"]) != 0:
             positions[pos["coin"]] = float(pos["szi"])
             entries[pos["coin"]] = float(pos.get("entryPx") or 0)
-    for it in store.intents_open():
+    for _row in store.intents_open():
+        it = dict(_row)          # dict, non Row: il drift muta i campi in-place
         if it["coin"] not in positions:
-            reason = exit_reason_for(dict(it))
+            reason = exit_reason_for(it)
+            _cancel_resting_tps(ex, it)
             sgn = 1 if it["side"] == "long" else -1
-            est = (it["stop_px"] - it["entry_px"]) * it["qty"] * sgn
+            est = (it["stop_px"] - it["entry_px"]) * \
+                (it["remaining_size"] or it["qty"]) * sgn
             label = "TRAILING_STOP" if reason == "trailing-stop" else "STOP_LOSS"
             log(f"[CLOSE] {it['coin']} {it['side'].upper()}: {label} @ ~"
                 f"{it['stop_px']:g} (PnL ${est:+,.2f}) - intent #{it['id']} archiviato")
@@ -175,10 +278,12 @@ def reconcile(c, cfg, ex):
         # la clearinghouse fa fede: qty parziale/esterna si sincronizza, lo stop
         # con size vecchia si ripiazza (reduceOnly clamperebbe comunque lo scarto)
         real = abs(positions[it["coin"]])
-        if abs(real - it["qty"]) > max(1e-9, it["qty"] * 1e-6):
-            log(f"[DRIFT] {it['coin']}: qty {it['qty']} -> {real} (sync clearinghouse)")
+        rem = it["remaining_size"] or it["qty"]
+        if abs(real - rem) > max(1e-9, rem * 1e-6):
+            log(f"[DRIFT] {it['coin']}: qty {rem} -> {real} (sync clearinghouse)")
             store.intent_set_qty(it["id"], real)
-            it["qty"] = real
+            store.intent_set_remaining(it["id"], real)
+            it["qty"] = it["remaining_size"] = real
             if it["stop_oid"]:
                 r = ex.cancel_order(it["coin"], it["stop_oid"])
                 if str(r.get("status", "")).lower() == "canceled":
@@ -205,7 +310,8 @@ def reconcile(c, cfg, ex):
         iid = store.intent_open(coin, side, abs(szi),
                                 entries.get(coin) or mid_o, stop_px)
         attach_stop(ex, {"id": iid, "coin": coin, "side": side,
-                         "qty": abs(szi), "stop_px": stop_px})
+                         "qty": abs(szi), "remaining_size": abs(szi),
+                         "stop_px": stop_px})
         log(f"[reconcile] {coin}: posizione orfana adottata -> intent #{iid} "
             f"+ stop {stop_px:.6g}")
 
@@ -411,7 +517,19 @@ def run_cycle(cfg, c, ex, coin, pre=None):
                                   entry_px, stop_px, fill.get("oid"),
                                   plan["leverage"])
     stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
-                            "qty": fill["filled_sz"], "stop_px": stop_px})
+                            "qty": fill["filled_sz"],
+                            "remaining_size": fill["filled_sz"], "stop_px": stop_px})
+
+    # ---- take-profit ladder nativa: 1.5/3/5 ATR, 40/30/30% ----
+    tps = []
+    if atr and atr > 0:
+        tps = ex.place_tp_orders(coin, llm_side, fill["filled_sz"], entry_px,
+                                 atr, uni)
+        for t in tps:
+            store.intent_set_tp(intent_id, t["n"], t["px"], t["sz"], t.get("oid"))
+        if any(t["status"] == "error" for t in tps):
+            log(f"[TP] ATTENZIONE {coin}: livelli in errore verranno "
+                f"ri-piazzati al prossimo ciclo")
 
     # ---- verifica ----
     ch = c.clearinghouse_state(cfg.wallet)
@@ -425,10 +543,11 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         "stop_status": stop["status"], "stop_oid": stop.get("oid"),
         "position": {k: pos_out.get(k) for k in ("szi", "entryPx", "unrealizedPnl")},
         "equity": eq,
+        "tps": [{"n": t["n"], "px": t["px"], "sz": t["sz"]} for t in tps],
     })
 
 
-def close_position(c, cfg, ex, it, reason="chiusura-manuale"):
+def close_position(c, cfg, ex, it, reason="chiusura-manuale", qty=None):
     """Chiude a mercato (reduce-only), cancella lo stop resting e archivia
     l'intento con reason (chiusura-manuale | signal-reversal)."""
     if it.get("stop_oid"):
@@ -436,6 +555,7 @@ def close_position(c, cfg, ex, it, reason="chiusura-manuale"):
             ex.cancel_order(it["coin"], it["stop_oid"])
         except Exception as e:  # noqa: BLE001 - lo stop e' magari gia' partito
             log(f"[close] {it['coin']} cancel stop fallito (procedo): {e}")
+    _cancel_resting_tps(ex, it)
     ch = c.clearinghouse_state(cfg.wallet)
     pos = next((p["position"] for p in ch["assetPositions"]
                 if p["position"]["coin"] == it["coin"]
@@ -445,7 +565,8 @@ def close_position(c, cfg, ex, it, reason="chiusura-manuale"):
         log(f"[close] {it['coin']}: nessuna posizione, intento archiviato")
         return
     side = "short" if float(pos["szi"]) > 0 else "long"
-    qty = abs(float(pos["szi"]))
+    avail = abs(float(pos["szi"]))
+    qty = min(avail, float(qty)) if qty else avail   # None/0-out-of-range => tutto
     fill = ex.place_market(it["coin"], side, qty, float(c.all_mids()[it["coin"]]),
                            reduce_only=True)
     if fill["status"] != "filled":
@@ -498,6 +619,7 @@ def main(argv=None):
     while True:
         try:
             t_cycle = time.time()
+            maintain_tps(c, cfg, ex)      # fill TP + BE prima di qualunque sync
             reconcile(c, cfg, ex)
             maintain_trailing(c, cfg, ex)
             mids = c.all_mids()

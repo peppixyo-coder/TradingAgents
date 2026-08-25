@@ -58,10 +58,10 @@ def trailing_candidate(side, entry, cur_stop, mark, atr, extreme,
         else (entry - extreme >= act * atr)
     if not prof_ok:
         return None
-    cand = extreme - mult * atr if side == "long" else extreme + mult * atr
+    cand = round(extreme - mult * atr if side == "long" else extreme + mult * atr, 6)
     better = cand > cur_stop if side == "long" else cand < cur_stop
     clear = cand < mark * (1 - buf) if side == "long" else cand > mark * (1 + buf)
-    return round(cand, 6) if (better and clear) else None
+    return cand if (better and clear) else None
 
 
 def exit_reason_for(it):

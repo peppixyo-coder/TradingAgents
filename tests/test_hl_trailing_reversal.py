@@ -116,3 +116,8 @@ def test_store_migration_legacy_db_aggiunge_colonne():
         assert row["peak_price"] == 49500.0 and row["trailing_active"] == 0
     finally:
         store.DB = old
+
+
+def test_trailing_nessun_churn_sotto_rounding():
+    # candidato uguale allo stop corrente entro 6 decimali -> None (no cancel/place)
+    assert trailing_candidate("long", 100.0, 100.5, 105.0, 2.0, 104.5000004, mult=2.0) is None

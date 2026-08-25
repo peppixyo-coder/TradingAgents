@@ -672,7 +672,14 @@ def main(argv=None):
                        "trades": flow.get(r["coin"], []),
                        "fng": (fng_v, fng_c), "heads": heads,
                        "ofi_z": r["ofi_z"]}
-                res = run_cycle(cfg, c, ex, r["coin"], pre=pre)
+                try:
+                    res = run_cycle(cfg, c, ex, r["coin"], pre=pre)
+                except Exception as e:  # ponytail: una coin senza dati (es.
+                    # ticker Yahoo mancante) non deve uccidere il ciclo;
+                    # upgrade = dead-letter con retry budget per coin.
+                    log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo")
+                    _log_cycle(stage="error", coin=r["coin"], error=repr(e))
+                    continue
                 tag = "TRADE" if res["executed"] else "skip"
                 log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
                     f"conv={res['conviction']} - {res.get('reason', 'ok')} "

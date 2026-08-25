@@ -688,6 +688,8 @@ def main(argv=None):
                 fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
             store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
+            _log_cycle(stage="cycle_done",
+                       dur_s=round(time.time() - t_cycle, 1))
         except Exception as e:
             _log_cycle(stage="error", error=repr(e))
             log(f"[loop] ERRORE ciclo: {e!r}")

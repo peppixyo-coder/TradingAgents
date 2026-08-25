@@ -23,9 +23,10 @@ def asset_class_of(coin: str) -> str:
     return "crypto_perp" if ":" not in coin else f"hip3_{coin.split(':', 1)[0]}"
 
 
-def _base_ticker(coin: str) -> str:
-    """xyz:NVDA -> NVDA (yfinance); nativi passano tali quali."""
-    return coin.split(":", 1)[-1].replace("-PERP", "")
+def _yf_ticker(coin: str) -> str:
+    """xyz:NVDA -> NVDA; BTC -> BTC-USD (yfinance); nativi con suffisso USD."""
+    base = coin.split(":", 1)[-1].replace("-PERP", "")
+    return f"{base}-USD" if asset_class_of(coin) == "crypto_perp" else base
 
 
 def _graph(asset_class: str, exec_ctx: str):
@@ -61,14 +62,15 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
     m = micro or {}
     exec_ctx = (
         f"CONTESTO DI ESECUZIONE ({ac}): questo strumento e' negoziabile come "
-        f"perpetuo HIP-3 '{coin}' su Hyperliquid, 24/7, isolato (no cross). "
+        f"perpetuo {'nativo' if ac == 'crypto_perp' else 'HIP-3'} '{coin}' su "
+        f"Hyperliquid, 24/7, isolato (no cross). "
         "Il position sizing e la leva sono decisi da un risk manager separato: "
         "concentrati su direzione, conviction e rischio relativo, non sulla quantita'.\n"
         + (f"MICROSTRUTTURA HL LIVE: {m}\n" if m else "")
     )
     g = _graph(ac, exec_ctx)
     t0 = dt.datetime.now()
-    final_state, rating = g.propagate(_base_ticker(coin), t0.strftime("%Y-%m-%d"))
+    final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
 
     side, conf = _RATING.get(str(rating).strip().lower(), ("flat", 0.0))
     dec = final_state.get("final_trade_decision") or ""
@@ -86,7 +88,13 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
 
 def run_pipeline(cfg, coin: str, blob: str | None = None, *,
                  micro: dict | None = None) -> dict:
-    """Router: crypto_perp -> flusso Combo-1 custom; hip3_* -> grafo upstream."""
+    """Router T28/T26: OGNI classe -> grafo upstream completo. Il flusso
+    custom (analysts.run_graph) resta fallback solo-crypto finche' lo
+    smoke gate della migrazione non e' verde."""
     if asset_class_of(coin) == "crypto_perp":
-        return analysts.run_graph(cfg, blob)
-    return run_upstream(cfg, coin, micro=micro)
+        try:
+            return run_upstream(cfg, coin, micro=micro)
+        except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
+            from .loop import log
+            log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")
+    return analysts.run_graph(cfg, blob)

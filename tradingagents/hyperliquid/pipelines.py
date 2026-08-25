@@ -91,10 +91,11 @@ def run_pipeline(cfg, coin: str, blob: str | None = None, *,
     """Router T28/T26: OGNI classe -> grafo upstream completo. Il flusso
     custom (analysts.run_graph) resta fallback solo-crypto finche' lo
     smoke gate della migrazione non e' verde."""
-    if asset_class_of(coin) == "crypto_perp":
-        try:
-            return run_upstream(cfg, coin, micro=micro)
-        except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
-            from .loop import log
-            log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")
+    try:
+        return run_upstream(cfg, coin, micro=micro)
+    except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
+        from .loop import log
+        log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")
+        if asset_class_of(coin) != "crypto_perp":
+            raise  # fallback solo-crypto: sulle altre classi fallisce visibile
     return analysts.run_graph(cfg, blob)

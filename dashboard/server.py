@@ -30,11 +30,14 @@ from tradingagents.hyperliquid.loop import equity, load_dotenv
 load_dotenv()
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 TS_FMT = "%Y-%m-%dT%H:%M:%S%z"
-HL_WS_URL = "wss://api.hyperliquid.xyz/ws"
+# WS dello STESSO mirror usato dal bot (HyPaper): mainnet non ha i coin HIP-3
+HL_WS_URL = os.environ.get(
+    "HYPAPER_URL", "http://localhost:3000").replace("http", "ws") + "/ws"
 TAKER_FEE = 0.00035  # stima: entrambe le gambe market/IOC
 _CLOSE_KIND = {"stop-loss": "STOP", "trailing-stop": "TRAILING",
                "signal-reversal": "REVERSAL", "chiusura-manuale": "MANUAL",
                "position-gone": "STOP", "take-profit-full": "TP_FULL",
+               "tp-full": "TP_FULL",
                "partial-tp-stop": "TP_PARTIAL+STOP"}
 
 
@@ -108,8 +111,11 @@ class Agg:
                     async for raw in ws:
                         msg = _json.loads(raw)
                         if msg.get("channel") == "allMids":
-                            self.mids = {k: float(v) for k, v
-                                         in msg["data"]["mids"].items()}
+                            # HyPaper: primo messaggio snapshot completo, poi
+                            # aggiornamenti parziali (solo coin mossi) -> merge,
+                            # mai replace, o i coin lenti perdono il mark.
+                            self.mids.update({k: float(v) for k, v
+                                              in msg["data"]["mids"].items()})
             except Exception:
                 self.hl_ws_ok = False
                 await asyncio.sleep(5)
@@ -402,17 +408,31 @@ class Agg:
             qty, entry = float(it["qty"]), float(it["entry_px"])
             sgn = 1 if str(it["side"]).lower().startswith(("long", "buy")) else -1
             tcs = _parse_ts(it["closed_ts"]) if it["closed_ts"] else None
-            xp = self.exit_px(it["coin"], tcs) if tcs else None
-            pnl = round((xp - entry) * qty * sgn, 2) if xp else None
-            # ponytail: fee stimata taker (0.035%) su entrambe le gambe; HyPaper non
-            # espone i fill reali (userFills rotto). Upgrade: sink Postgres HyPaper.
-            fee = round((entry + (xp or entry)) * qty * TAKER_FEE, 4) if xp else None
             hit = [n for n in (1, 2, 3) if int(it[f"tp{n}_filled"] or 0)]
             tps = [{"n": n, "px": float(it[f"tp{n}_px"])}
                    for n in (1, 2, 3) if it[f"tp{n}_px"]]
             pnl_tps = round(sum((float(it[f"tp{n}_px"]) - entry)
                                 * float(it[f"tp{n}_size"] or 0) * sgn
-                                for n in hit), 2) if xp and hit else None
+                                for n in hit), 2) if hit else None
+            # closed_ts = istante in cui reconcile archivia (spesso in batch al
+            # restart), NON il fill reale: la candela li' e' rumore. PnL dai
+            # prezzi registrati nel DB quando la chiusura li conosce; candela
+            # solo fallback (reversal/manuale/nessun motivo).
+            reason = (it["close_reason"] or "").strip().lower()
+            xp, pnl = None, None
+            if reason == "tp-full" and len(hit) == 3:
+                xp, pnl = float(it["tp3_px"]), pnl_tps
+            elif reason in ("stop-loss", "trailing-stop", "partial-tp-stop",
+                            "position-gone") and it["stop_px"]:
+                xp = float(it["stop_px"])
+                rem = float(it["remaining_size"] or it["qty"])
+                pnl = round((pnl_tps or 0) + (xp - entry) * rem * sgn, 2)
+            if xp is None and tcs:
+                xp = self.exit_px(it["coin"], tcs)
+                pnl = round((xp - entry) * qty * sgn, 2) if xp else None
+            # ponytail: fee stimata taker (0.035%) su entrambe le gambe; HyPaper non
+            # espone i fill reali (userFills rotto). Upgrade: sink Postgres HyPaper.
+            fee = round((entry + (xp or entry)) * qty * TAKER_FEE, 4) if xp else None
             out.append({
                 "id": it["id"], "coin": it["coin"], "side": it["side"],
                 "qty": qty, "notional": entry * qty,

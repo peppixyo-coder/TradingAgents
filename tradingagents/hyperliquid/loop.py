@@ -17,6 +17,7 @@ import asyncio
 import json
 import math
 import os
+import traceback
 import sys
 import time
 
@@ -677,15 +678,14 @@ def main(argv=None):
                 except Exception as e:  # ponytail: una coin senza dati (es.
                     # ticker Yahoo mancante) non deve uccidere il ciclo;
                     # upgrade = dead-letter con retry budget per coin.
-                    log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo")
+                    tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
+                    log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
                     _log_cycle(stage="error", coin=r["coin"], error=repr(e))
                     continue
                 tag = "TRADE" if res["executed"] else "skip"
                 log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
                     f"conv={res['conviction']} - {res.get('reason', 'ok')} "
                     f"({time.time() - t0:.0f}s)")
-            with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
-                fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
             store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
             _log_cycle(stage="cycle_done",

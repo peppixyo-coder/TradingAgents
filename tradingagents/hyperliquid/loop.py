@@ -690,6 +690,8 @@ def main(argv=None):
                 log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
                     f"conv={res['conviction']} - {res.get('reason', 'ok')} "
                     f"({time.time() - t0:.0f}s)")
+            with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
+                fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
             store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
             _log_cycle(stage="cycle_done",

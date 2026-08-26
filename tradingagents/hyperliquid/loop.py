@@ -457,6 +457,10 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     gextra = {"llm_side": g["decision"]["side"], "rationale": g["decision"].get("rationale", ""),
               "panel": g["panel"], "debate": g["debate"],
               "llm_ms": round((time.time() - _t) * 1000)}
+    # ponytail: il grafo dura ~35 min -> il mid del pre e' stantio e l'IOC
+    # a 50bps non filla; refresh qui cosi' sizing/veto/stop/fill vedono il
+    # prezzo corrente. Upgrade: limit entry con slippage budget esplicito.
+    mid = float(c.all_mids().get(coin) or mid)
     llm_side, rationale = gextra["llm_side"], gextra["rationale"]
     if held_it:
         rev = reversal_decision(held_it["side"], llm_side,

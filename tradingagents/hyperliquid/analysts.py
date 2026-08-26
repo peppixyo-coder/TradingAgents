@@ -8,6 +8,7 @@ generalizzazione post-spike.
 """
 import json
 import urllib.request
+import time
 
 PANEL_SYS = (
     "Sei una sala analisti crypto per perpetual su Hyperliquid. Rispondi in "
@@ -35,14 +36,27 @@ LEV_SYS = (
 )
 
 
-def _post(base_url, key, payload, timeout=300):
+def _post(base_url, key, payload, timeout=180, retries=2):
     req = urllib.request.Request(
         base_url + "/chat/completions",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = r.read().decode()
+    # ponytail: timeout 180s + retry con backoff: una chiamata Combo-1 appesa
+    # non deve bloccare il grafo; dopo i tentativi l'errore sale e il loop
+    # skippa la coin. Upgrade: dead-letter con retry budget per coin.
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read().decode()
+            break
+        except Exception as e:  # timeout/rete/HTTP: riprova con backoff
+            last = e
+            if attempt >= retries:
+                raise RuntimeError(
+                    f"LLM HTTP fallita dopo {retries + 1} tentativi: {last!r}") from e
+            time.sleep(2 * (attempt + 1))
     # Il router manda text/event-stream con padding whitespace prima del JSON:
     # si taglia al primo '{' (stesso workaround del test di connettivita').
     obj, _ = json.JSONDecoder().raw_decode(body[body.index("{"):])
@@ -62,6 +76,19 @@ def _chat(cfg, system, user, max_tokens=2000):
     return resp["choices"][0]["message"]["content"]
 
 
+def _parse_decision(raw):
+    """Estrae il JSON della decisione da raw; None se vuoto/non-JSON/side invalido."""
+    if not raw or "{" not in raw or "}" not in raw:
+        return None
+    try:
+        j = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+    except ValueError:
+        return None
+    if not isinstance(j, dict) or j.get("side") not in ("long", "short", "flat"):
+        return None
+    return j
+
+
 def run_graph(cfg, ctx):
     """ctx: stringa di contesto compatta prodotta dal runner.
 
@@ -70,14 +97,21 @@ def run_graph(cfg, ctx):
     """
     panel = _chat(cfg, PANEL_SYS, ctx)
     debate = _chat(cfg, DEBATE_SYS, f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}")
-    raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS,
-                f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}\n\nDibattito:\n{debate}")
-    try:
-        j = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-    except ValueError:
-        raise RuntimeError(f"decisione non-JSON dal modello: {raw[:300]}")
-    if j.get("side") not in ("long", "short", "flat"):
-        raise RuntimeError(f"side invalido nella decisione: {raw[:300]}")
+    decide_user = f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}\n\nDibattito:\n{debate}"
+    # ponytail: Combo-1 ogni tanto risponde vuoto/non-JSON sul DECIDE (vedi
+    # bot.log 'decisione non-JSON dal modello: '); retry locale con backoff,
+    # poi fallback flat (nessun trade) invece del RuntimeError che abortisce
+    # il ciclo. Upgrade: dead-letter con retry budget per coin.
+    j, raw = None, ""
+    for attempt in range(3):
+        raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS, decide_user) or ""
+        j = _parse_decision(raw)
+        if j is not None:
+            break
+        time.sleep(1 + attempt)
+    if j is None:
+        j = {"side": "flat", "confidence": None, "leverage": None,
+             "rationale": f"LLM decisione non-JSON dopo 3 tentativi: {raw[:120]!r}"}
     lev = j.get("leverage")
     if isinstance(lev, bool) or not isinstance(lev, (int, float)) or float(lev) < 1:
         j["leverage"] = None  # il loop skippa con NO_LEVERAGE: nessun default nel codice

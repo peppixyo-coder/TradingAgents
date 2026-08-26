@@ -297,6 +297,7 @@ class Agg:
             "cyclesTotal": len(self.cycles), "scans": len(scans),
             "executedN": len(executed),
             "errors24": len(errs24), "lastError": errs24[-1].get("error") if errs24 else None,
+            "errorsList": [{"ts": r.get("ts"), "error": r.get("error")} for r in errs24],
             "uptimeS": int(time.time() - (min((_parse_ts(r["ts"]) for r in self.cycles
                                                if _parse_ts(r["ts"])), default=time.time()))),
             "heartbeatAgeS": hb_age,

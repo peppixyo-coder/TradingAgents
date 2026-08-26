@@ -260,6 +260,14 @@ function renderRisk() {
 const kv = pairs => pairs.map(([l, v]) => `<label>${l}</label><b>${v}</b>`).join("");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmtText = v => {
+  if (v == null || v === "") return "—";
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(fmtText).join("\n\n");
+  if (typeof v === "object") return Object.entries(v)
+    .map(([k, x]) => `${k.toUpperCase()}\n${fmtText(x)}`).join("\n\n");
+  return String(v);
+};
 
 /* ---------- trades ---------- */
 function filteredTrades() {
@@ -298,7 +306,6 @@ function toggleTradeRow(tr) {
   $$("#tbl-trades tr.sel").forEach(e => e.classList.remove("sel"));
   const t = S.trades.find(x => x.id === id); if (!t) return;
   tr.classList.add("sel");
-  const p = t.panel || {};
   const tr2 = document.createElement("tr"); tr2.className = "xrow";
   tr2.innerHTML = `<td colspan="13"><div class="detail-grid">
     <div><h3 class="card-h" style="margin-top:0">Decisione</h3><div class="kv cols">${kv([
@@ -308,9 +315,9 @@ function toggleTradeRow(tr) {
       ["PnL residuo (stop)", t.pnlResidual != null ? usd(t.pnlResidual) : "—"]])}</div>
       <div class="box" style="margin-top:8px">${esc(t.rationale || "—")}</div></div>
     <div><h3 class="card-h" style="margin-top:0">Panel</h3>
-      <div class="box">${esc(p.bull || "—")}</div>
-      <div class="box" style="margin-top:6px">${esc(p.bear || "—")}</div></div>
-    <div><h3 class="card-h" style="margin-top:0">Debate</h3><div class="box">${esc(t.debate || "—")}</div></div>
+      <div class="box">${esc(fmtText(t.panel))}</div></div>
+    <div><h3 class="card-h" style="margin-top:0">Debate</h3>
+      <div class="box">${esc(fmtText(t.debate))}</div></div>
   </div></td>`;
   tr.after(tr2);
 }
@@ -432,8 +439,8 @@ function showCycle(i) {
     ["Durata", r.dur_s ? r.dur_s + " s" : "—"]]);
   $("#ag-decision").insertAdjacentHTML("beforeend",
     `<label>Rationale</label><b class="sans" style="white-space:normal">${esc(r.rationale || "—")}</b>`);
-  $("#ag-panel").textContent = r.panel || "—";
-  $("#ag-debate").textContent = r.debate || "—";
+  $("#ag-panel").textContent = fmtText(r.panel);
+  $("#ag-debate").textContent = fmtText(r.debate);
 }
 
 /* ---------- market ---------- */
@@ -514,7 +521,7 @@ function renderSystem() {
     ["Lev cap", c.lev_cap + "x"],
     ["DD g/sett", `${c.daily_dd} / ${c.weekly_dd}`], ["Stop ATR×", c.atr_stop_mult],
     ["z min", c.signal_z_min], ["Scan", c.scanIntervalS + "s"], ["WS collect", c.wsCollectS + "s"]]);
-  const errs = S.scans.filter(r => r.stage === "error");
+  const errs = (k.errorsList || []).slice().reverse();
   $("#sys-errors").innerHTML = errs.length
     ? errs.slice(0, 10).map(e => `${e.ts} ${esc(e.error || "")}`).join("\n")
     : "nessun errore in 24h.";

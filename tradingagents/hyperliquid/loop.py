@@ -20,6 +20,8 @@ import os
 import traceback
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from . import analysts, pipelines, registry, risk, scanner, screener, signal, store
 from .config import load
@@ -33,6 +35,14 @@ WHALE_MIN_USD = 10_000     # print taker minimo ($): sotto, rumore nel prompt PM
 REVERSAL_CONF_MIN = 0.7   # conf PM minima per chiudere su segnale opposto
 TRAIL_ACTIVATE_ATR = 1.0  # profitto (in ATR) che attiva il trailing
 TRAIL_BUF = 0.002         # nuovo stop almeno a questo buffer dal mid
+
+# I mutamenti di ordini/posizioni (esecuzione in run_cycle + thread di
+# monitoraggio) sono serializzati: evita che reconcile veda "posizione senza
+# intento" tra place_market e intent_open e la chiuda come orfana.
+_ORDER_LOCK = threading.Lock()
+MAX_GRAPH_WORKERS = int(os.getenv("HL_MAX_GRAPH_WORKERS", "3"))  # grafi paralleli
+GRAPH_TIMEOUT_S = int(os.getenv("HL_GRAPH_TIMEOUT_S", "3600"))   # hard timeout grafo
+MONITOR_INTERVAL_S = int(os.getenv("HL_MONITOR_INTERVAL_S", "60"))
 
 
 def _ts(s):
@@ -162,13 +172,29 @@ def attach_stop(ex, intent):
     return r
 
 
-def _cancel_resting_tps(ex, it):
-    """Cancella i TP ancora resting (stop uscito / chiusura manuale / reversal):
-    su posizione piatta resterebbero ordini morti nel book."""
+def _cancel_resting_tps(ex, it, c=None, cfg=None):
+    """Cancella i reduce-only resting del coin (TP + stop residuo): prima dagli
+    oid in DB, poi con scan del book (copre gli oid persi). Su posizione piatta
+    resterebbero zombie nel book."""
     gone = ex.cancel_tp_orders(it["coin"],
                                [it.get(f"tp{n}_oid") for n in (1, 2, 3)])
+    if c is not None and cfg is not None:
+        try:
+            orders = c._post("/info", {"type": "frontendOpenOrders",
+                                       "user": cfg.wallet})
+            for o in orders:
+                if str(o.get("coin", "")) == it["coin"] and o.get("reduceOnly") \
+                        and o.get("oid"):
+                    try:
+                        r = ex.cancel_order(it["coin"], o["oid"])
+                        if str(r.get("status", "")).lower().startswith("canceled"):
+                            gone.append(o["oid"])
+                    except Exception:
+                        pass
+        except Exception as e:
+            log(f"[TP] {it['coin']}: scan book per cancel fallito: {e}")
     if gone:
-        log(f"[TP] {it['coin']}: cancel {len(gone)} TP resting")
+        log(f"[TP] {it['coin']}: cancel {len(gone)} ordini resting")
 
 
 def move_stop_to_breakeven(c, cfg, ex, it):
@@ -196,6 +222,17 @@ def move_stop_to_breakeven(c, cfg, ex, it):
     return True
 
 
+def _resting_oids(c, cfg):
+    """Insieme degli oid resting (frontendOpenOrders); None se endpoint giu'."""
+    try:
+        orders = c._post("/info", {"type": "frontendOpenOrders",
+                                   "user": cfg.wallet})
+        return {str(o.get("oid")) for o in orders}
+    except Exception as e:
+        log(f"[TP] frontendOpenOrders non disponibile: {e}")
+        return None
+
+
 def maintain_tps(c, cfg, ex):
     """Cuore della scala TP: confronta |szi| clearinghouse con remaining_size,
     marca i fill (sequenziali, gestisce gap multi-livello sulla stessa candela),
@@ -208,6 +245,7 @@ def maintain_tps(c, cfg, ex):
     ch = c.clearinghouse_state(cfg.wallet)
     live = {p["position"]["coin"]: abs(float(p["position"]["szi"]))
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
+    resting = _resting_oids(c, cfg)
     fills = be_moves = 0
     for _row in store.intents_open():
         it = dict(_row)
@@ -222,6 +260,16 @@ def maintain_tps(c, cfg, ex):
         szi = live.get(it["coin"], 0.0)
         closed = rem - szi
         eps = max(1e-12, rem * 1e-9)
+        if szi <= eps:
+            # posizione sparita: NON marcare TP alla cieca (causa dei falsi
+            # tp-full). Stop ancora resting => uscita dai TP; altrimenti e'
+            # stop-out/esterno: reconcile archivia senza toccare i flag.
+            stop_live = resting is not None and it.get("stop_oid") \
+                and str(it["stop_oid"]) in resting
+            if not stop_live:
+                log(f"[TP] {it['coin']}: posizione piatta, TP non marcati "
+                    f"(stop-out/esterno; archivia reconcile)")
+                continue
         if closed <= eps:
             # nessun fill nuovo: ri-piazza eventuali livelli pianificati senza oid
             for n in [n for n in planned if not it[f"tp{n}_oid"]]:
@@ -237,6 +285,9 @@ def maintain_tps(c, cfg, ex):
         cur = dict(it)                       # vista con remaining aggiornato
         for n in planned:                    # sequenziale: TP1 prima di TP2...
             sz_n = float(it[f"tp{n}_size"] or 0)
+            oid_n = it[f"tp{n}_oid"]
+            if resting is not None and oid_n and str(oid_n) in resting:
+                break                        # ancora nel book: non ha fillato
             if sz_n <= 0 or closed + eps < sz_n:
                 break                        # fill parziale: il resto al prox ciclo
             store.intent_mark_tp(it["id"], n)
@@ -267,13 +318,21 @@ def reconcile(c, cfg, ex):
         it = dict(_row)          # dict, non Row: il drift muta i campi in-place
         if it["coin"] not in positions:
             reason = exit_reason_for(it)
-            _cancel_resting_tps(ex, it)
+            _cancel_resting_tps(ex, it, c, cfg)
             sgn = 1 if it["side"] == "long" else -1
-            est = (it["stop_px"] - it["entry_px"]) * \
-                (it["remaining_size"] or it["qty"]) * sgn
-            label = "TRAILING_STOP" if reason == "trailing-stop" else "STOP_LOSS"
-            log(f"[CLOSE] {it['coin']} {it['side'].upper()}: {label} @ ~"
-                f"{it['stop_px']:g} (PnL ${est:+,.2f}) - intent #{it['id']} archiviato")
+            if reason == "tp-full":
+                est = sum((float(it[f"tp{n}_px"] or 0) - it["entry_px"])
+                          * float(it[f"tp{n}_size"] or 0) * sgn
+                          for n in (1, 2, 3))
+                at = f"tp3 {float(it['tp3_px'] or 0):g}"
+            else:
+                est = (it["stop_px"] - it["entry_px"]) * \
+                    (it["remaining_size"] or it["qty"]) * sgn
+                at = f"~{it['stop_px']:g}"
+            label = {"trailing-stop": "TRAILING_STOP", "tp-full": "TP_FULL",
+                     "partial-tp-stop": "TP_PARTIAL+STOP"}.get(reason, "STOP_LOSS")
+            log(f"[CLOSE] {it['coin']} {it['side'].upper()}: {label} @ {at} "
+                f"(PnL ${est:+,.2f}) - intent #{it['id']} archiviato")
             store.intent_close(it["id"], reason)
             continue
         # la clearinghouse fa fede: qty parziale/esterna si sincronizza, lo stop
@@ -475,7 +534,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         log(f"[cycle] REVERSAL {coin}: PM {llm_side} (conf "
             f"{g['decision'].get('confidence')}) -> chiudo {held_it['side']} "
             f"(PnL ${pnl_est:+,.2f})")
-        close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
+        with _ORDER_LOCK:
+            close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
     elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
@@ -515,30 +575,31 @@ def run_cycle(cfg, c, ex, coin, pre=None):
         return done(False, f"QTY_LOT_ZERO qty={plan['qty']} step={step}")
     plan = dict(plan, qty=qty_lot, notional=round(qty_lot * mid, 2))
     # ---- esecuzione + stop nativo + persistenza intento ----
-    ex.set_leverage(coin, plan["leverage"])
-    fill = ex.place_market(coin, llm_side, plan["qty"], mid)
-    if fill["status"] != "filled":
-        return done(False, f"fill non eseguito: {fill['status']} {fill.get('error', '')}",
-                    {"plan": plan})
-    entry_px = fill["avg_px"]
+    with _ORDER_LOCK:
+        ex.set_leverage(coin, plan["leverage"])
+        fill = ex.place_market(coin, llm_side, plan["qty"], mid)
+        if fill["status"] != "filled":
+            return done(False, f"fill non eseguito: {fill['status']} {fill.get('error', '')}",
+                        {"plan": plan})
+        entry_px = fill["avg_px"]
 
-    intent_id = store.intent_open(coin, llm_side, fill["filled_sz"],
-                                  entry_px, stop_px, fill.get("oid"),
-                                  plan["leverage"])
-    stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
-                            "qty": fill["filled_sz"],
-                            "remaining_size": fill["filled_sz"], "stop_px": stop_px})
+        intent_id = store.intent_open(coin, llm_side, fill["filled_sz"],
+                                      entry_px, stop_px, fill.get("oid"),
+                                      plan["leverage"])
+        stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
+                                "qty": fill["filled_sz"],
+                                "remaining_size": fill["filled_sz"], "stop_px": stop_px})
 
-    # ---- take-profit ladder nativa: 1.5/3/5 ATR, 40/30/30% ----
-    tps = []
-    if atr and atr > 0:
-        tps = ex.place_tp_orders(coin, llm_side, fill["filled_sz"], entry_px,
-                                 atr, uni)
-        for t in tps:
-            store.intent_set_tp(intent_id, t["n"], t["px"], t["sz"], t.get("oid"))
-        if any(t["status"] == "error" for t in tps):
-            log(f"[TP] ATTENZIONE {coin}: livelli in errore verranno "
-                f"ri-piazzati al prossimo ciclo")
+        # ---- take-profit ladder nativa: 1.5/3/5 ATR, 40/30/30% ----
+        tps = []
+        if atr and atr > 0:
+            tps = ex.place_tp_orders(coin, llm_side, fill["filled_sz"], entry_px,
+                                     atr, uni)
+            for t in tps:
+                store.intent_set_tp(intent_id, t["n"], t["px"], t["sz"], t.get("oid"))
+            if any(t["status"] == "error" for t in tps):
+                log(f"[TP] ATTENZIONE {coin}: livelli in errore verranno "
+                    f"ri-piazzati al prossimo ciclo")
 
     # ---- verifica ----
     ch = c.clearinghouse_state(cfg.wallet)
@@ -564,7 +625,7 @@ def close_position(c, cfg, ex, it, reason="chiusura-manuale", qty=None):
             ex.cancel_order(it["coin"], it["stop_oid"])
         except Exception as e:  # noqa: BLE001 - lo stop e' magari gia' partito
             log(f"[close] {it['coin']} cancel stop fallito (procedo): {e}")
-    _cancel_resting_tps(ex, it)
+    _cancel_resting_tps(ex, it, c, cfg)
     ch = c.clearinghouse_state(cfg.wallet)
     pos = next((p["position"] for p in ch["assetPositions"]
                 if p["position"]["coin"] == it["coin"]
@@ -603,6 +664,62 @@ def _write_screener_json(rows, funnel, triggered=()):
                             for r in rows]}, fh)
 
 
+def _monitor_loop(c, cfg, ex):
+    """Manutenzione continua (TP fill/BE, reconcile, trailing) su thread
+    dedicato (fix b): non resta piu' bloccata dai grafi LLM, che durano
+    decine di minuti. Ogni passo e' serializzato con l'esecuzione di
+    run_cycle via _ORDER_LOCK. Daemon: muore con il processo."""
+    while True:
+        for fn in (maintain_tps, reconcile, maintain_trailing):
+            try:
+                with _ORDER_LOCK:
+                    fn(c, cfg, ex)
+            except Exception as e:  # noqa: BLE001 - un passo ko non ferma gli altri
+                log(f"[monitor] ERRORE {fn.__name__}: {e!r}")
+        time.sleep(MONITOR_INTERVAL_S)
+
+
+def _run_graphs_parallel(cfg, c, ex, jobs):
+    """Gira i grafi LLM in parallelo (fix a) con hard timeout (fix c).
+
+    Ogni run_cycle e' indipendente (grafo fresco per coin, memoria per-coin);
+    l'esecuzione degli ordini resta serializzata da _ORDER_LOCK dentro
+    run_cycle. All'hard timeout i grafi non conclusi sono abbandonati: il
+    thread puo' restare appeso (i thread Python non sono killabili), ma il
+    ciclo procede."""
+    if not jobs:
+        return
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=min(MAX_GRAPH_WORKERS, len(jobs)),
+                            thread_name_prefix="graph") as pool:
+        futs = {pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre): r
+                for r, pre in jobs}
+        done_set, not_done = wait(futs, timeout=GRAPH_TIMEOUT_S)
+        for fut in done_set:
+            r = futs[fut]
+            try:
+                res = fut.result()
+            except Exception as e:  # ponytail: una coin senza dati (es.
+                # ticker Yahoo mancante) non deve uccidere il ciclo;
+                # upgrade = dead-letter con retry budget per coin.
+                tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
+                log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
+                _log_cycle(stage="error", coin=r["coin"], error=repr(e))
+                continue
+            tag = "TRADE" if res["executed"] else "skip"
+            log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
+                f"conv={res['conviction']} - {res.get('reason', 'ok')} "
+                f"({res.get('dur_s', 0):.0f}s)")
+        for fut in not_done:
+            r = futs[fut]
+            fut.cancel()
+            log(f"[cycle] TIMEOUT {r['coin']}: grafo oltre {GRAPH_TIMEOUT_S}s, "
+                f"abbandonato (il thread puo' restare appeso)")
+            _log_cycle(stage="error", coin=r["coin"],
+                       error=f"graph timeout {GRAPH_TIMEOUT_S}s")
+    log(f"[loop] {len(jobs)} grafi in parallelo in {time.time() - t0:.0f}s")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     once = "--once" in argv
@@ -624,13 +741,12 @@ def main(argv=None):
         return
     log(f"[loop] universo dinamico (registry+screener) interval={interval}s "
         f"mode={cfg.trading_mode}")
+    threading.Thread(target=_monitor_loop, args=(c, cfg, ex),
+                     daemon=True, name="hl-monitor").start()
 
     while True:
         try:
             t_cycle = time.time()
-            maintain_tps(c, cfg, ex)      # fill TP + BE prima di qualunque sync
-            reconcile(c, cfg, ex)
-            maintain_trailing(c, cfg, ex)
             mids = c.all_mids()
             _, n_perp, n_spot = registry.universe(c)
             log(f"[universe] {n_perp} perp + {n_spot} spot; mids {len(mids)}")
@@ -653,7 +769,7 @@ def main(argv=None):
             for r in rows:
                 log(f"[scan] {r['coin']:8s} px={r['mid']:,.4g} z={r['ofi_z']:+.2f} "
                     f"rsi={r['rsi']} macd_h={r['macd_h']} vol_x={r['vol_x']} "
-                    f"fundD={r['funding_delta']} oiD={r['oi_delta']}")
+                    f"fund={r['funding'] * 24 * 365 * 100:+.2f}% oiD={r['oi_delta']}")
             trig = scanner.triggers(rows, cfg.signal_z_min, d1_map=d1_map, log_fn=log)
             _write_screener_json(rows, funnel, [t["coin"] for t in trig])
             log(f"[trigger] {len(trig)}/{len(rows)} sopra {cfg.signal_z_min}s: "
@@ -669,27 +785,16 @@ def main(argv=None):
 
             fng_v, fng_c = fng()
             heads = rss_headlines()
+            jobs = []
             for r in trig:
-                t0 = time.time()
                 pre = {"mid": r["mid"], "ctx": r["ctx"], "h1": h1_map[r["coin"]],
                        "h4": c.candles(r["coin"], "4h", 30 * 24 * 3600 * 1000),
                        "d1": d1_map[r["coin"]],
                        "trades": flow.get(r["coin"], []),
                        "fng": (fng_v, fng_c), "heads": heads,
                        "ofi_z": r["ofi_z"]}
-                try:
-                    res = run_cycle(cfg, c, ex, r["coin"], pre=pre)
-                except Exception as e:  # ponytail: una coin senza dati (es.
-                    # ticker Yahoo mancante) non deve uccidere il ciclo;
-                    # upgrade = dead-letter con retry budget per coin.
-                    tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
-                    log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
-                    _log_cycle(stage="error", coin=r["coin"], error=repr(e))
-                    continue
-                tag = "TRADE" if res["executed"] else "skip"
-                log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
-                    f"conv={res['conviction']} - {res.get('reason', 'ok')} "
-                    f"({time.time() - t0:.0f}s)")
+                jobs.append((r, pre))
+            _run_graphs_parallel(cfg, c, ex, jobs)
             with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
                 fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
             store.backup_if_due()

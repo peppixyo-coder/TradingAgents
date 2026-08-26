@@ -15,6 +15,9 @@ MAX_SPREAD_BPS = 25.0
 MIN_AGE_DAYS = 30
 STABLES = {"USDT", "USDC", "FDUSD", "USDH", "USDE", "USDT0", "PYUSD", "DAI",
            "FRAX", "USDS", "TUSD", "USD1", "EURC", "EURI", "USDX"}
+# Private/unlisted equities without Yahoo coverage: gli analyst non hanno
+# dati reali e fabbricherebbero. Fuori dall'universo tradabile.
+EXCLUDE_BASES = {"ZHIPU", "CXMT"}
 
 
 def is_stable(name, mid):
@@ -54,7 +57,7 @@ def screene(c, mids):
     funnel = {"universo": len(pairs)}
     rows = []
     for name, ctx in pairs:
-        if name not in mids:
+        if name not in mids or name.split(":")[-1] in EXCLUDE_BASES:
             continue
         mid = float(mids[name])
         if is_stable(name, mid):

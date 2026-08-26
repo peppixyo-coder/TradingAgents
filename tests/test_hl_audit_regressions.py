@@ -59,6 +59,9 @@ class _ExFail:
     def cancel_order(self, *a):
         pass
 
+    def cancel_tp_orders(self, *a):
+        return []
+
     def place_market(self, *a, **k):
         return {"status": "error", "error": "mirror down"}
 

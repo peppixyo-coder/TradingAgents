@@ -130,13 +130,17 @@ def test_registry_max_leverage():
     from tradingagents.hyperliquid import registry
 
     class Fake:
-        def asset_ctxs(self):
-            return {"universe": [
-                {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
-                {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}]}, None
-
         def _post(self, path, payload):
-            return {"universe": [{}, {}]}
+            t = payload.get("type")
+            if t == "perpDexs":
+                return [None]                      # solo il dex nativo
+            if t == "allPerpMetas":
+                return [{"universe": [
+                    {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
+                    {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}]}]
+            if t == "spotMeta":
+                return {"universe": []}
+            return {}
 
     c = Fake()
     assert registry.max_leverage(c, "BTC") == 40

@@ -60,36 +60,37 @@ assert scanner.pearson(lin, [2 * x + 1 for x in lin]) > 0.999
 assert abs(scanner.pearson(lin, [(x % 2) - 0.5 for x in lin])) < 0.2
 assert scanner.pearson(lin[:10], lin[:10]) == 0.0   # sotto n_min => 0, mai NaN
 
-# ---- portfolio_veto ----
+# ---- portfolio_veto -> (reasons_hard, advisory) ----
 cfg = type("C", (), {"lev_cap": 3.0})()
 pos = lambda coin, val, szi: {"position": {"coin": coin, "positionValue": val,
                                            "szi": szi}}
 eq = 10_000
-assert risk.portfolio_veto(cfg, eq, "ETH", 500, [pos("BTC", 400, 0.01)], 0) == []
-v = risk.portfolio_veto(cfg, eq, "BTC", 700, [pos("BTC", 400, 0.01)], 0)
-assert any("ASSET_CAP" in x for x in v), v          # 400+700 > 10% di 10k
-v = risk.portfolio_veto(cfg, eq, "SOL", 16000, [pos("ETH", 15000, 5)], 0)
-assert any("LEV_TOT" in x for x in v), v            # 31k > 3x eq
-v = risk.portfolio_veto(cfg, eq, "PEPE", 100, [], 3)
-assert any("CORR_CLUSTER" in x for x in v), v       # 3 correlati + 1 > 3
-assert risk.portfolio_veto(cfg, 0, "BTC", 100, [], 0) == ["EQUITY<=0"]
+hard, adv = risk.portfolio_veto(cfg, eq, "ETH", 500, [pos("BTC", 400, 0.01)], 0)
+assert hard == [] and adv is None
+hard, _ = risk.portfolio_veto(cfg, eq, "BTC", 700, [pos("BTC", 400, 0.01)], 0)
+assert any("ASSET_CAP" in x for x in hard), hard     # 400+700 > 10% di 10k
+hard, adv = risk.portfolio_veto(cfg, eq, "SOL", 16000, [pos("ETH", 15000, 5)], 0)
+assert adv is not None and "LEV_TOT" in adv["why"], adv  # 31k>3x eq => advisory
+hard, _ = risk.portfolio_veto(cfg, eq, "PEPE", 100, [], 3)
+assert any("CORR_CLUSTER" in x for x in hard), hard  # 3 correlati + 1 > 3
+assert risk.portfolio_veto(cfg, 0, "BTC", 100, [], 0) == (["EQUITY<=0"], None)
 
 # ---- nessun cap assoluto posizioni + margine ----
 c2 = type("C", (), {"lev_cap": 3.0, "base_frac": 0.10, "min_notional": 10.0,
                     "atr_stop_mult": 2.0})()
-plan = risk.size_order(c2, 10_000, 100.0, 0.02, 50.0, 1.0)
-assert plan["veto"] is None, plan   # la firma non accetta piu' un conteggio posizioni
+plan = risk.size_order(c2, 10_000, 100.0, 0.02, 50.0, 1.0, leverage=2)
+assert plan["veto"] is None, plan   # leva obbligatoria fornita; nessun cap posizioni
 levpos = lambda coin, val, szi, lev: {
     "position": {"coin": coin, "positionValue": val, "szi": szi,
                  "leverage": {"value": lev}}}
-v = risk.portfolio_veto(cfg, 1_000, "DOGE", 100,
-                        [levpos("A", 800, 1, 2), levpos("B", 800, 1, 2),
-                         levpos("C", 800, 1, 2)], 0)
-assert any("INSUFFICIENT_MARGIN" in x for x in v), v
-# stessa struttura a leva 20x: margine 120, free 880 >= notional 500 => nessun veto
+hard, _ = risk.portfolio_veto(cfg, 1_000, "DOGE", 100,
+                              [levpos("A", 800, 1, 2), levpos("B", 800, 1, 2),
+                               levpos("C", 800, 1, 2)], 0)
+assert any("INSUFFICIENT_MARGIN" in x for x in hard), hard
+# stessa struttura a leva 20x: margine 120, free 880 >= notional 100 => nessun veto
 assert risk.portfolio_veto(cfg, 1_000, "DOGE", 100,
                            [levpos("A", 800, 1, 20), levpos("B", 800, 1, 20),
-                            levpos("C", 800, 1, 20)], 0) == []
+                            levpos("C", 800, 1, 20)], 0) == ([], None)
 
 # ---- ctx_deltas ----
 prev = {"ETH": {"funding": 0.0001, "oi": 100.0}}

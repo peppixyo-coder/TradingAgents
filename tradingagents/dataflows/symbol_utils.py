@@ -60,6 +60,10 @@ _ALIASES = {
     "BCOUSD": "BZ=F", "UKOIL": "BZ=F", "BRENT": "BZ=F",
     "NATGAS": "NG=F", "XNGUSD": "NG=F",
     "COPPER": "HG=F", "XCUUSD": "HG=F",
+    # Bare front-month future codes (Hyperliquid HIP-3 bases: xyz:CL -> CL).
+    "GC": "GC=F", "SI": "SI=F", "CL": "CL=F", "BZ": "BZ=F",
+    "NG": "NG=F", "HG": "HG=F",
+    "BRENTOIL": "BZ=F", "SP500": "^GSPC", "USTECH": "^NDX",
     # Index CFDs -> Yahoo index symbols
     "SPX500": "^GSPC", "US500": "^GSPC", "SPX": "^GSPC",
     "NAS100": "^NDX", "US100": "^NDX", "USTEC": "^NDX",

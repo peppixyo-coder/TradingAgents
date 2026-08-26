@@ -8,6 +8,7 @@ Contratto identico al flusso crypto (analysts.run_graph):
 """
 import datetime as dt
 import os
+import threading
 
 from . import analysts
 
@@ -16,7 +17,10 @@ _RATING = {"buy": ("long", 0.7), "overweight": ("long", 0.6),
            "hold": ("flat", 0.0), "underweight": ("short", 0.6),
            "sell": ("short", 0.7)}
 
-_graphs: dict = {}  # asset_class -> TradingAgentsGraph (uno per processo)
+# Il costruttore di TradingAgentsGraph chiama set_config() su un dict globale:
+# serializzo la sola costruzione; propagate() (il 99% del tempo) gira in
+# parallelo su istanze distinte, una per chiamata.
+_BUILD_LOCK = threading.Lock()
 
 
 def asset_class_of(coin: str) -> str:
@@ -30,27 +34,28 @@ def _yf_ticker(coin: str) -> str:
     return f"{base}-USD" if asset_class_of(coin) == "crypto_perp" else base
 
 
-def _graph(asset_class: str, exec_ctx: str):
-    """Grafo upstream costruito una volta per classe; il contesto HIP-3
-    corrente viaggia sull'istanza e viene iniettato a OGNI agente via
-    instrument_context (nessun prompt upstream toccato)."""
-    g = _graphs.get(asset_class)
-    if g is not None:
-        g._perp_exec_ctx = exec_ctx
-        return g
-
+def _graph(asset_class: str, exec_ctx: str, coin: str):
+    """Grafo upstream fresco per chiamata. propagate() muta self (ticker,
+    curr_state, log_states_dict), quindi un'istanza condivisa non e'
+    thread-safe: ne costruisco una per run sotto _BUILD_LOCK (il costruttore
+    chiama set_config, che tocca un dict globale). Il contesto HIP-3 viaggia
+    in closure, non sull'istanza. Memory log per-coin: il default e' un unico
+    file condiviso, non sicuro con propagate() concorrenti (append + rewrite
+    .tmp si intrecciano)."""
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     conf = {**DEFAULT_CONFIG,
             "max_debate_rounds": 2,        # decisione T26: dibattiti completi
             "max_risk_discuss_rounds": 2}
-    g = TradingAgentsGraph(config=conf)
+    mem_dir = os.path.dirname(DEFAULT_CONFIG["memory_log_path"])
+    safe = coin.replace(":", "_").replace("/", "_").replace("\\", "_")
+    conf["memory_log_path"] = os.path.join(mem_dir, f"trading_memory_{safe}.md")
+    with _BUILD_LOCK:
+        g = TradingAgentsGraph(config=conf)
     base_ctx = g.resolve_instrument_context
     g.resolve_instrument_context = lambda t, a="stock": (
-        base_ctx(t, a) + "\n\n" + getattr(g, "_perp_exec_ctx", ""))
-    g._perp_exec_ctx = exec_ctx
-    _graphs[asset_class] = g
+        base_ctx(t, a) + "\n\n" + exec_ctx)
     return g
 
 
@@ -69,7 +74,7 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
         "concentrati su direzione, conviction e rischio relativo, non sulla quantita'.\n"
         + (f"MICROSTRUTTURA HL LIVE: {m}\n" if m else "")
     )
-    g = _graph(ac, exec_ctx)
+    g = _graph(ac, exec_ctx, coin)
     t0 = dt.datetime.now()
     final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
 

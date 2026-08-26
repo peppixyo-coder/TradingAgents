@@ -19,6 +19,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
+    "TRADINGAGENTS_LLM_TIMEOUT":          "llm_timeout",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -100,6 +101,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # provider/SDK at its own default (usually 2). Raise it to ride out bursty
     # 429 throttling on rate-limited deployments instead of aborting a run (#1091).
     "llm_max_retries": None,
+    # Per-request LLM timeout (seconds). None leaves each provider/SDK at its
+    # own default. Set (e.g. 180) so a hung Combo-1 call can't stall a run;
+    # the SDK retries within this budget (llm_max_retries) before the caller
+    # skips the coin.
+    "llm_timeout": None,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,

@@ -183,6 +183,13 @@ class TradingAgentsGraph:
         if max_retries is not None and max_retries != "":
             kwargs["max_retries"] = _coerce_max_retries(max_retries)
 
+        # Per-request timeout is cross-provider. Forward it only when set so a
+        # hung Combo-1 call can't stall the graph indefinitely; the SDK retries
+        # within this budget (llm_max_retries) before the run skips the coin.
+        timeout = self.config.get("llm_timeout")
+        if timeout is not None and timeout != "":
+            kwargs["timeout"] = float(timeout)
+
         return kwargs
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:

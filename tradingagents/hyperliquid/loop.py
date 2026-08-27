@@ -122,6 +122,17 @@ def _log_cycle(**kw):
         fh.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **kw}) + "\n")
 
 
+def _touch_heartbeat():
+    """Tocca l'heartbeat: un ciclo vivo ma lungo (69 coin, grafi serializzati)
+    non deve scadere la soglia healthcheck (3*HL_SCAN_INTERVAL). Chiamato a
+    inizio ciclo e all'avvio di ogni grafo."""
+    try:
+        with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
+            fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    except OSError:
+        pass
+
+
 def log(msg):
     """Stampa e appende a state/bot.log (log viewer della dashboard)."""
     line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {msg}"
@@ -445,6 +456,7 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     """Un ciclo completo su un coin: dati->segnale->grafo->rischio->
     esecuzione+stop->verifica. Ritorna dict esito (per test/report)."""
     t_start = time.time()
+    _touch_heartbeat()
     held_it = next((dict(i) for i in store.intents_open() if i["coin"] == coin),
                    None)
     # NB: nessun early-return qui: con segnale opposto il grafo decide se chiudere
@@ -670,6 +682,8 @@ def _monitor_loop(c, cfg, ex):
     decine di minuti. Ogni passo e' serializzato con l'esecuzione di
     run_cycle via _ORDER_LOCK. Daemon: muore con il processo."""
     while True:
+        _touch_heartbeat()  # liveness ogni 60s, indipendente dal ciclo LLM
+        log("[monitor] heartbeat")
         for fn in (maintain_tps, reconcile, maintain_trailing):
             try:
                 with _ORDER_LOCK:
@@ -690,33 +704,40 @@ def _run_graphs_parallel(cfg, c, ex, jobs):
     if not jobs:
         return
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=min(MAX_GRAPH_WORKERS, len(jobs)),
-                            thread_name_prefix="graph") as pool:
-        futs = {pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre): r
-                for r, pre in jobs}
-        done_set, not_done = wait(futs, timeout=GRAPH_TIMEOUT_S)
-        for fut in done_set:
-            r = futs[fut]
-            try:
-                res = fut.result()
-            except Exception as e:  # ponytail: una coin senza dati (es.
-                # ticker Yahoo mancante) non deve uccidere il ciclo;
-                # upgrade = dead-letter con retry budget per coin.
-                tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
-                log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
-                _log_cycle(stage="error", coin=r["coin"], error=repr(e))
-                continue
-            tag = "TRADE" if res["executed"] else "skip"
-            log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
-                f"conv={res['conviction']} - {res.get('reason', 'ok')} "
-                f"({res.get('dur_s', 0):.0f}s)")
-        for fut in not_done:
-            r = futs[fut]
-            fut.cancel()
-            log(f"[cycle] TIMEOUT {r['coin']}: grafo oltre {GRAPH_TIMEOUT_S}s, "
-                f"abbandonato (il thread puo' restare appeso)")
-            _log_cycle(stage="error", coin=r["coin"],
-                       error=f"graph timeout {GRAPH_TIMEOUT_S}s")
+    workers = min(MAX_GRAPH_WORKERS, len(jobs))
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph")
+    futs = {pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre): r
+            for r, pre in jobs}
+    # wait() ha un budget TOTALE: con workers<len(jobs) (es. seriale) un solo
+    # grafo lento esaurirebbe il budget bloccando gli altri. Si scala per
+    # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S.
+    waves = (len(jobs) + workers - 1) // workers
+    done_set, not_done = wait(futs, timeout=GRAPH_TIMEOUT_S * waves)
+    for fut in done_set:
+        r = futs[fut]
+        try:
+            res = fut.result()
+        except Exception as e:  # ponytail: una coin senza dati (es.
+            # ticker Yahoo mancante) non deve uccidere il ciclo;
+            # upgrade = dead-letter con retry budget per coin.
+            tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
+            log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
+            _log_cycle(stage="error", coin=r["coin"], error=repr(e))
+            continue
+        tag = "TRADE" if res["executed"] else "skip"
+        log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
+            f"conv={res['conviction']} - {res.get('reason', 'ok')} "
+            f"({res.get('dur_s', 0):.0f}s)")
+    for fut in not_done:
+        r = futs[fut]
+        fut.cancel()
+        log(f"[cycle] TIMEOUT {r['coin']}: grafo oltre {GRAPH_TIMEOUT_S}s, "
+            f"abbandonato (il thread puo' restare appeso)")
+        _log_cycle(stage="error", coin=r["coin"],
+                   error=f"graph timeout {GRAPH_TIMEOUT_S}s")
+    # fix: il `with` del ThreadPoolExecutor fa shutdown(wait=True) e blocca
+    # il ciclo sui thread dei grafi andati in timeout (non killabili).
+    pool.shutdown(wait=False)
     log(f"[loop] {len(jobs)} grafi in parallelo in {time.time() - t0:.0f}s")
 
 
@@ -747,6 +768,7 @@ def main(argv=None):
     while True:
         try:
             t_cycle = time.time()
+            _touch_heartbeat()
             mids = c.all_mids()
             _, n_perp, n_spot = registry.universe(c)
             log(f"[universe] {n_perp} perp + {n_spot} spot; mids {len(mids)}")
@@ -795,8 +817,7 @@ def main(argv=None):
                        "ofi_z": r["ofi_z"]}
                 jobs.append((r, pre))
             _run_graphs_parallel(cfg, c, ex, jobs)
-            with open(os.path.join(os.path.dirname(store.DB), "heartbeat"), "w") as fh:
-                fh.write(time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+            _touch_heartbeat()
             store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
             _log_cycle(stage="cycle_done",

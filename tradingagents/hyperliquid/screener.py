@@ -44,10 +44,11 @@ def age_days(c, coin):
 def screene(c, mids):
     """(passati [{coin, mid, chg24h, vol24h, oi, funding, spread_bps, ctx}], funnel)."""
     from . import registry
+    uni = registry.universe(c)[0]  # unica estrazione: la cache 1h e' la radice del fix
     meta, ctxs = c.asset_ctxs()
     pairs = [(u["name"], ctx) for u, ctx in zip(meta["universe"], ctxs)
              if not u.get("isDelisted")]
-    for dex in sorted({e["dex"] for e in registry.universe(c)[0].values() if e["dex"]}):
+    for dex in sorted({e["dex"] for e in uni.values() if e["dex"]}):
         try:
             dm, dctxs = c._post("/info", {"type": "metaAndAssetCtxs", "dex": dex})
         except Exception:
@@ -55,20 +56,28 @@ def screene(c, mids):
         pairs += [(u["name"] if ":" in u["name"] else f"{dex}:{u['name']}", x)
                   for u, x in zip(dm["universe"], dctxs) if not u.get("isDelisted")]
     funnel = {"universo": len(pairs)}
-    rows = []
+    rows, freschi = [], 0
     for name, ctx in pairs:
         if name not in mids or name.split(":")[-1] in EXCLUDE_BASES:
+            continue
+        if name not in uni:
+            # Fix B (KeyError para:SOFI/io:GPRO 2026-09-01): listing piu'
+            # giovane della cache registry (1h) o race per-dex. L'age gate
+            # >=30g lo escluderebbe comunque -> fuori, contato, ciclo vivo.
+            freschi += 1
             continue
         mid = float(mids[name])
         if is_stable(name, mid):
             continue
         rows.append({"coin": name, "mid": mid,
-                     "asset_class": registry.universe(c)[0][name]["asset_class"],
+                     "asset_class": uni[name]["asset_class"],
                      "vol24h": float(ctx["dayNtlVlm"]),
                      "oi": float(ctx["openInterest"]) * mid,
                      "funding": float(ctx["funding"]),
                      "prev_day": float(ctx["prevDayPx"]),
                      "ctx": ctx})
+    if freschi:
+        funnel["listing_freschi_fuori"] = freschi
     funnel["non_stabili"] = len(rows)
 
     rows = [r for r in rows if r["vol24h"] >= MIN_VOL_USD]

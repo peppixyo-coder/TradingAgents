@@ -1,5 +1,6 @@
 """Regressioni audit T20: fmt_px HL-compliant, pearson sui rendimenti,
-chiusura solo su conferma fill, adozione posizioni orfane, backup orario."""
+chiusura solo su conferma fill, adozione posizioni orfane, backup orario,
+screener fail-closed su listing fuori registry, trailing tollera mid mancante."""
 import os
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from tradingagents.hyperliquid import loop, scanner, store  # noqa: E402
+from tradingagents.hyperliquid import registry, screener  # noqa: E402
 from tradingagents.hyperliquid.executor import HyperliquidExecutor, _fmt_px  # noqa: E402
 
 
@@ -142,6 +144,66 @@ def test_backup_if_due_creates_and_prunes():
         store.DB = old_db
 
 
+# ---- Fix B (2026-09-01): KeyError coin freschi para:SOFI / io:GPRO ----------
+class _ScreenerClient:
+    """Mock: mids/ctxs freschi contengono para:SOFI, la cache registry no
+    (listing piu' giovane della cache 1h, la condizione del bug in prod)."""
+
+    def asset_ctxs(self):
+        return ({"universe": [{"name": "BTC", "isDelisted": False},
+                              {"name": "para:SOFI", "isDelisted": False}]},
+                [{"dayNtlVlm": "1e9", "openInterest": "10", "funding": "0",
+                  "prevDayPx": "10"}] * 2)
+
+    def _post(self, path, body):
+        if body.get("type") == "candleSnapshot":
+            return [{"t": 1}]                              # listing epoch -> eta enorme
+        if body.get("type") == "l2Book":
+            return {"levels": [[{"px": "100"}], [{"px": "100.01"}]]}
+        return []                                          # nessun dex per-dex
+
+
+def test_screener_skip_coin_fuori_registry():
+    old_db = store.DB
+    real_universe = registry.universe
+    registry.universe = lambda c: (
+        {"BTC": {"asset_class": "crypto_perp", "dex": None}}, 1, 0)
+    try:
+        store.DB = os.path.join(tempfile.mkdtemp(), "t.db")
+        store.init()
+        passed, funnel = screener.screene(_ScreenerClient(),
+                                          {"BTC": "100000", "para:SOFI": "9"})
+        assert [r["coin"] for r in passed] == ["BTC"], \
+            "coin fuori registry: fuori, contato, ciclo vivo (era KeyError)"
+        assert funnel.get("listing_freschi_fuori") == 1, \
+            "il funnel deve contare i listing freschi esclusi"
+    finally:
+        registry.universe = real_universe
+        store.DB = old_db
+
+
+def test_trailing_tollera_mid_mancante():
+    """mids senza il coin dell'intento aperto (delisted): skip, il thread
+    monitor non muore e gli altri intenti restano manutenuti."""
+    old_db = store.DB
+    try:
+        store.DB = os.path.join(tempfile.mkdtemp(), "t.db")
+        store.init()
+        iid = store.intent_open("XYZ:COIN", "long", 1.0, 100.0, 90.0)
+        store.intent_set_peak(iid, 110.0)
+        cl = type("Cl", (), {
+            "clearinghouse_state": lambda s, w: {"assetPositions": [
+                {"position": {"coin": "XYZ:COIN", "szi": "1"}}]},
+            "all_mids": lambda s: {"BTC": "100"},          # XYZ:COIN senza mid
+            "candles_cached": lambda s, *a: [],
+        })()
+        moved = loop.maintain_trailing(cl, SimpleNamespace(wallet="w"), None)
+        assert moved == 0, "coin senza mid: skip, nessuno stop spostato"
+        assert len(store.intents_open()) == 1, "l'intento resta aperto"
+    finally:
+        store.DB = old_db
+
+
 if __name__ == "__main__":
     test_fmt_px_sigfig()
     test_fmt_px_decimals_cap()
@@ -150,4 +212,6 @@ if __name__ == "__main__":
     test_close_only_on_fill()
     test_reconcile_adopts_orphan()
     test_backup_if_due_creates_and_prunes()
-    print("OK: 7/7 regressioni audit passate")
+    test_screener_skip_coin_fuori_registry()
+    test_trailing_tollera_mid_mancante()
+    print("OK: 9/9 regressioni audit passate")

@@ -138,12 +138,14 @@ def log(msg):
     line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {msg}"
     print(line)
     try:
+        if not store.DB:
+            return                            # store non inizializzato: solo stdout
         p = os.path.join(os.path.dirname(store.DB), "bot.log")
         if os.path.exists(p) and os.path.getsize(p) > 5 * 1024 * 1024:
             os.replace(p, p + ".1")     # rotazione: un solo archivio da 5MB
         with open(p, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-    except OSError:
+    except (OSError, TypeError):
         pass
 
 
@@ -419,7 +421,10 @@ def maintain_trailing(c, cfg, ex):
             continue  # ts imparsabile: finestra peak inaffidabile, niente trailing
         h1_all = c.candles_cached(it["coin"], "1h", 7 * 24 * 3600 * 1000)
         h1 = [k for k in h1_all if k["t"] / 1000 >= t0 - 3600]
-        mark = float(mids[it["coin"]])
+        mid = mids.get(it["coin"])
+        if mid is None:  # coin delisted/senza quote: trailing saltato per questo
+            continue    # intento; reconcile archivia se la posizione e' andata
+        mark = float(mid)
         vals = [k["h"] for k in h1] if it["side"] == "long" else [k["l"] for k in h1]
         vals.append(mark)
         if it["peak_price"]:

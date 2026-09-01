@@ -41,6 +41,29 @@ def age_days(c, coin):
     return (time.time() * 1000 - int(ts)) / 86_400_000
 
 
+def _spread_stage(rows, fetch_book, funnel):
+    """Stadio spread (fix D): fail-closed su spread ignoto o NEGATIVO
+    (book crossato = bid>ask, dato marcio non prezzo reale) e su
+    spread > MAX_SPREAD_BPS. Ritorna la lista dei passed; aggiorna funnel."""
+    passed, spread_unknown = [], 0
+    for r in rows:
+        try:
+            book = fetch_book(r["coin"])
+            bid, ask = float(book[0][0]["px"]), float(book[1][0]["px"])
+            r["spread_bps"] = (ask - bid) / ((ask + bid) / 2) * 1e4
+        except Exception:
+            r["spread_bps"] = None
+        if r["spread_bps"] is None or r["spread_bps"] <= 0:
+            spread_unknown += 1
+            continue
+        if r["spread_bps"] <= MAX_SPREAD_BPS:
+            passed.append(r)
+    if spread_unknown:
+        funnel["spread_sconosciuto_fuori"] = spread_unknown
+    funnel[f"spread<={MAX_SPREAD_BPS:.0f}bps"] = len(passed)
+    return passed
+
+
 def screene(c, mids):
     """(passati [{coin, mid, chg24h, vol24h, oi, funding, spread_bps, ctx}], funnel)."""
     from . import registry
@@ -88,24 +111,8 @@ def screene(c, mids):
     rows = [r for r in rows if (age_days(c, r["coin"]) or 0) >= MIN_AGE_DAYS]
     funnel[f"eta>={MIN_AGE_DAYS}g"] = len(rows)
 
-    passed, spread_unknown = [], 0
-    for r in rows:
-        try:
-            book = c._post("/info", {"type": "l2Book", "coin": r["coin"]})["levels"]
-            bid, ask = float(book[0][0]["px"]), float(book[1][0]["px"])
-            r["spread_bps"] = (ask - bid) / ((ask + bid) / 2) * 1e4
-        except Exception:
-            r["spread_bps"] = None
-        if r["spread_bps"] is None:
-            # fail-closed: spread ignoto => il coin resta fuori (boundary di fiducia
-            # a monte del sizing), mai passato per default.
-            spread_unknown += 1
-            continue
-        if r["spread_bps"] <= MAX_SPREAD_BPS:
-            passed.append(r)
-    if spread_unknown:
-        funnel["spread_sconosciuto_fuori"] = spread_unknown
-    funnel[f"spread<={MAX_SPREAD_BPS:.0f}bps"] = len(passed)
+    passed = _spread_stage(rows, lambda coin: c._post(
+        "/info", {"type": "l2Book", "coin": coin})["levels"], funnel)
 
     for r in passed:
         r["chg24h"] = (r["mid"] / r["prev_day"] - 1) * 100 if r["prev_day"] else None

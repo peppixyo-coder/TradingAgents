@@ -7,6 +7,7 @@ Contratto identico al flusso crypto (analysts.run_graph):
   {"panel": ..., "debate": ..., "decision": {"side","confidence","rationale",...}}
 """
 import datetime as dt
+import time
 import os
 import threading
 
@@ -28,10 +29,46 @@ def asset_class_of(coin: str) -> str:
     return "crypto_perp" if ":" not in coin else f"hip3_{coin.split(':', 1)[0]}"
 
 
+# Mappa esplicita coin HL -> ticker Yahoo (ticket C). Key: base del coin
+# (xyz:NVDA -> NVDA, BTC -> BTC). I token nativi crypto su Yahoo usano
+# il suffisso -USD; gli stock/equity HIP-3 girano nudi. Coperta dalle
+# eccezioni note: se un ticker non risolve, la cache errori lo blocca 6h.
+# Mappa esplicita per i soli casi che la regola generica non copre
+# (ticket C + fog map.md): ticker HIP-3 senza nome Yahoo uguale alla base.
+# Tutto il resto passa dalla regola: crypto nativo -> BASE-USD, equity -> base.
+YF_TICKERS = {
+    # commodity/indici HIP-3 su Yahoo futures/indici
+    "BRENTOIL": "BZ=F", "USTECH": "^NDX", "SP500": "^GSPC",
+    # azioni estere con suffisso di borsa
+    "SMSN": "005930.KS",
+}
+
+_YF_ERR_CACHE = {}          # base -> monotonic ts dell'ultimo insuccesso
+_YF_ERR_TTL = 6 * 3600      # ticket C: dopo un errore non ritentare per 6h
+
+
 def _yf_ticker(coin: str) -> str:
-    """xyz:NVDA -> NVDA; BTC -> BTC-USD (yfinance); nativi con suffisso USD."""
+    """xyz:NVDA -> NVDA; BTC -> BTC-USD (yfinance); nativi con suffisso USD.
+    YF_TICKERS overridea i casi non derivabili (BRENTOIL->BZ=F, USTECH->^NDX)."""
     base = coin.split(":", 1)[-1].replace("-PERP", "")
+    if base in YF_TICKERS:
+        return YF_TICKERS[base]
     return f"{base}-USD" if asset_class_of(coin) == "crypto_perp" else base
+
+
+def yf_ticker_resolves(coin: str) -> bool:
+    """False se il ticker Yahoo e' in cache errori (ultimi 6h): evita di
+    sprecare una chiamata LLM completa su un simbolo che non risolve."""
+    base = coin.split(":", 1)[-1].replace("-PERP", "")
+    ts = _YF_ERR_CACHE.get(base)
+    return not (ts is not None and time.monotonic() - ts < _YF_ERR_TTL)
+
+
+def yf_ticker_failed(coin: str):
+    """Segna il ticker come fallito: run_upstream lo richiama quando il
+    grafo upstream alza (ticker Yahoo inesistente e simili)."""
+    base = coin.split(":", 1)[-1].replace("-PERP", "")
+    _YF_ERR_CACHE[base] = time.monotonic()
 
 
 def _graph(asset_class: str, exec_ctx: str, coin: str):
@@ -74,9 +111,15 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
         "concentrati su direzione, conviction e rischio relativo, non sulla quantita'.\n"
         + (f"MICROSTRUTTURA HL LIVE: {m}\n" if m else "")
     )
+    if not yf_ticker_resolves(coin):
+        raise RuntimeError(f"ticker Yahoo in cache errori (6h): {coin}")
     g = _graph(ac, exec_ctx, coin)
     t0 = dt.datetime.now()
-    final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
+    try:
+        final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
+    except Exception as e:
+        yf_ticker_failed(coin)  # ticket C: non ripetere lo stesso errore per 6h
+        raise
 
     side, conf = _RATING.get(str(rating).strip().lower(), ("flat", 0.0))
     # ponytail: leva fornita alla frontiera - il prompt upstream esclude la

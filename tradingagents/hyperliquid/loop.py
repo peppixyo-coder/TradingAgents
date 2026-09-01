@@ -809,6 +809,14 @@ def main(argv=None):
                 trig = sorted(trig, key=lambda r: -abs(r["ofi_z"]))[:_max_g]
                 log(f"[loop] budget {_max_g} grafi/ciclo: top per |z|, "
                     f"il resto al prossimo ciclo")
+            # ticket C: coin con ticker Yahoo in cache errori (6h) non
+            # consumano slot di budget grafi - skip silenzioso con log.
+            _skip = [r["coin"] for r in trig
+                     if not pipelines.yf_ticker_resolves(r["coin"])]
+            if _skip:
+                trig = [r for r in trig if pipelines.yf_ticker_resolves(r["coin"])]
+                log(f"[loop] {len(_skip)} coin skip: ticker Yahoo in cache "
+                    f"errori 6h: {_skip}")
 
             fng_v, fng_c = fng()
             heads = rss_headlines()

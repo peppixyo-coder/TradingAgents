@@ -59,7 +59,13 @@ def _post(base_url, key, payload, timeout=180, retries=2):
             time.sleep(2 * (attempt + 1))
     # Il router manda text/event-stream con padding whitespace prima del JSON:
     # si taglia al primo '{' (stesso workaround del test di connettivita').
-    obj, _ = json.JSONDecoder().raw_decode(body[body.index("{"):])
+    start = body.find("{")
+    if start < 0:
+        raise RuntimeError(f"LLM risposta senza JSON: {body[:120]!r}")
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(body[start:])
+    except ValueError as e:
+        raise RuntimeError(f"LLM JSON malformato: {body[:120]!r}") from e
     return obj
 
 
@@ -73,20 +79,33 @@ def _chat(cfg, system, user, max_tokens=2000):
             {"role": "user", "content": user},
         ],
     })
-    return resp["choices"][0]["message"]["content"]
+    # ponytail: il router a volte risponde {"error": ...} senza choices:
+    # contenuto vuoto -> il chiamante lo tratta come non-JSON e degrada
+    # (retry/flat) invece di uccidere il ciclo con KeyError.
+    try:
+        return resp["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return ""
 
 
 def _parse_decision(raw):
-    """Estrae il JSON della decisione da raw; None se vuoto/non-JSON/side invalido."""
-    if not raw or "{" not in raw or "}" not in raw:
+    """Estrae il primo oggetto JSON bilanciato da raw (livello 3, il piu'
+    robusto): gestisce prosa prima/dopo, stringhe con graffe, markdown
+    fences, concatenazione malformata. None se non c'e' nulla di valido."""
+    if not raw:
         return None
-    try:
-        j = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-    except ValueError:
-        return None
-    if not isinstance(j, dict) or j.get("side") not in ("long", "short", "flat"):
-        return None
-    return j
+    dec = json.JSONDecoder()
+    for start, ch in enumerate(raw):
+        if ch == "{":
+            try:
+                obj, _ = dec.raw_decode(raw, start)
+            except ValueError:
+                continue            # '{' spurio (es. in prosa): prova il prossimo
+        else:
+            continue
+        if isinstance(obj, dict) and obj.get("side") in ("long", "short", "flat"):
+            return obj
+    return None
 
 
 def run_graph(cfg, ctx):
@@ -95,8 +114,14 @@ def run_graph(cfg, ctx):
     Ritorna dict {panel, debate, decision}; side e' firmato dall'LLM,
     conviction resta meccanico a valle (risk.py).
     """
-    panel = _chat(cfg, PANEL_SYS, ctx)
-    debate = _chat(cfg, DEBATE_SYS, f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}")
+    def _safe_chat(system, user):
+        try:
+            return _chat(cfg, system, user)
+        except Exception:  # router giu': il grafo degrada a flat, non raise
+            return ""
+
+    panel = _safe_chat(PANEL_SYS, ctx)
+    debate = _safe_chat(DEBATE_SYS, f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}")
     decide_user = f"Contesto:\n{ctx}\n\nPannello analisti:\n{panel}\n\nDibattito:\n{debate}"
     # ponytail: Combo-1 ogni tanto risponde vuoto/non-JSON sul DECIDE (vedi
     # bot.log 'decisione non-JSON dal modello: '); retry locale con backoff,
@@ -104,7 +129,10 @@ def run_graph(cfg, ctx):
     # il ciclo. Upgrade: dead-letter con retry budget per coin.
     j, raw = None, ""
     for attempt in range(3):
-        raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS, decide_user) or ""
+        try:
+            raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS, decide_user) or ""
+        except Exception:  # router giu'/timeout dopo i retry HTTP: degrada a flat
+            raw = ""
         j = _parse_decision(raw)
         if j is not None:
             break

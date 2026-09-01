@@ -42,6 +42,15 @@ TRAIL_BUF = 0.002         # nuovo stop almeno a questo buffer dal mid
 _ORDER_LOCK = threading.Lock()
 MAX_GRAPH_WORKERS = int(os.getenv("HL_MAX_GRAPH_WORKERS", "3"))  # grafi paralleli
 GRAPH_TIMEOUT_S = int(os.getenv("HL_GRAPH_TIMEOUT_S", "3600"))   # hard timeout grafo
+# ticket A: dopo un errore/timeout di grafo la coin va in cooldown -
+# non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).
+GRAPH_COOLDOWN_S = int(os.getenv("HL_GRAPH_COOLDOWN_S", "3600"))
+_GRAPH_COOLDOWN = {}  # coin -> monotonic ts fino a cui skippare
+
+
+def graph_in_cooldown(coin: str) -> bool:
+    ts = _GRAPH_COOLDOWN.get(coin)
+    return ts is not None and time.monotonic() < ts
 MONITOR_INTERVAL_S = int(os.getenv("HL_MONITOR_INTERVAL_S", "60"))
 
 
@@ -728,6 +737,7 @@ def _run_graphs_parallel(cfg, c, ex, jobs):
             tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
             log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
             _log_cycle(stage="error", coin=r["coin"], error=repr(e))
+            _GRAPH_COOLDOWN[r["coin"]] = time.monotonic() + GRAPH_COOLDOWN_S
             continue
         tag = "TRADE" if res["executed"] else "skip"
         log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
@@ -740,6 +750,7 @@ def _run_graphs_parallel(cfg, c, ex, jobs):
             f"abbandonato (il thread puo' restare appeso)")
         _log_cycle(stage="error", coin=r["coin"],
                    error=f"graph timeout {GRAPH_TIMEOUT_S}s")
+        _GRAPH_COOLDOWN[r["coin"]] = time.monotonic() + GRAPH_COOLDOWN_S
     # fix: il `with` del ThreadPoolExecutor fa shutdown(wait=True) e blocca
     # il ciclo sui thread dei grafi andati in timeout (non killabili).
     pool.shutdown(wait=False)
@@ -811,12 +822,15 @@ def main(argv=None):
                     f"il resto al prossimo ciclo")
             # ticket C: coin con ticker Yahoo in cache errori (6h) non
             # consumano slot di budget grafi - skip silenzioso con log.
-            _skip = [r["coin"] for r in trig
-                     if not pipelines.yf_ticker_resolves(r["coin"])]
+            # ticket A: anche le coin in cooldown grafo (errore/timeout
+            # del ciclo scorso) non consumano budget.
+            _ok = lambda r: (pipelines.yf_ticker_resolves(r["coin"])
+                             and not graph_in_cooldown(r["coin"]))
+            _skip = [r["coin"] for r in trig if not _ok(r)]
             if _skip:
-                trig = [r for r in trig if pipelines.yf_ticker_resolves(r["coin"])]
-                log(f"[loop] {len(_skip)} coin skip: ticker Yahoo in cache "
-                    f"errori 6h: {_skip}")
+                trig = [r for r in trig if _ok(r)]
+                log(f"[loop] {len(_skip)} coin skip (ticker yf in cache "
+                    f"errori o cooldown grafo): {_skip}")
 
             fng_v, fng_c = fng()
             heads = rss_headlines()

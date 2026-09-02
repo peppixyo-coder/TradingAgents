@@ -41,7 +41,9 @@ TRAIL_BUF = 0.002         # nuovo stop almeno a questo buffer dal mid
 # intento" tra place_market e intent_open e la chiuda come orfana.
 _ORDER_LOCK = threading.Lock()
 MAX_GRAPH_WORKERS = int(os.getenv("HL_MAX_GRAPH_WORKERS", "3"))  # grafi paralleli
-GRAPH_TIMEOUT_S = int(os.getenv("HL_GRAPH_TIMEOUT_S", "3600"))   # hard timeout grafo
+GRAPH_TIMEOUT_S = int(os.getenv("PER_ASSET_GRAPH_TIMEOUT_S")     # hard timeout grafo
+                      or os.getenv("HL_GRAPH_TIMEOUT_S", "600"))  # (nome legacy)
+CYCLE_MAX_RUNTIME_S = int(os.getenv("CYCLE_MAX_RUNTIME_S", "1200"))  # tetto ciclo
 # ticket A: dopo un errore/timeout di grafo la coin va in cooldown -
 # non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).
 GRAPH_COOLDOWN_S = int(os.getenv("HL_GRAPH_COOLDOWN_S", "3600"))
@@ -705,9 +707,7 @@ def _monitor_loop(c, cfg, ex):
             except Exception as e:  # noqa: BLE001 - un passo ko non ferma gli altri
                 log(f"[monitor] ERRORE {fn.__name__}: {e!r}")
         time.sleep(MONITOR_INTERVAL_S)
-
-
-def _run_graphs_parallel(cfg, c, ex, jobs):
+def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     """Gira i grafi LLM in parallelo (fix a) con hard timeout (fix c).
 
     Ogni run_cycle e' indipendente (grafo fresco per coin, memoria per-coin);
@@ -724,16 +724,20 @@ def _run_graphs_parallel(cfg, c, ex, jobs):
             for r, pre in jobs}
     # wait() ha un budget TOTALE: con workers<len(jobs) (es. seriale) un solo
     # grafo lento esaurirebbe il budget bloccando gli altri. Si scala per
-    # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S.
+    # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S,
+    # ma non oltre il tetto del ciclo: il budget residuo vince.
     waves = (len(jobs) + workers - 1) // workers
-    done_set, not_done = wait(futs, timeout=GRAPH_TIMEOUT_S * waves)
+    budget = GRAPH_TIMEOUT_S * waves
+    if t_cycle is not None:
+        budget = min(budget, max(CYCLE_MAX_RUNTIME_S - (time.time() - t_cycle), 60))
+    log(f"[loop] grafi: {len(jobs)} job, {workers} worker, budget {budget:.0f}s "
+        f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves})")
+    done_set, not_done = wait(futs, timeout=budget)
     for fut in done_set:
         r = futs[fut]
         try:
             res = fut.result()
         except Exception as e:  # ponytail: una coin senza dati (es.
-            # ticker Yahoo mancante) non deve uccidere il ciclo;
-            # upgrade = dead-letter con retry budget per coin.
             tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
             log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")
             _log_cycle(stage="error", coin=r["coin"], error=repr(e))
@@ -746,10 +750,10 @@ def _run_graphs_parallel(cfg, c, ex, jobs):
     for fut in not_done:
         r = futs[fut]
         fut.cancel()
-        log(f"[cycle] TIMEOUT {r['coin']}: grafo oltre {GRAPH_TIMEOUT_S}s, "
-            f"abbandonato (il thread puo' restare appeso)")
+        log(f"[cycle] TIMEOUT {r['coin']}: budget {budget:.0f}s esaurito "
+            f"(per-grafo {GRAPH_TIMEOUT_S}s), abbandonato")
         _log_cycle(stage="error", coin=r["coin"],
-                   error=f"graph timeout {GRAPH_TIMEOUT_S}s")
+                   error=f"graph timeout {budget:.0f}s")
         _GRAPH_COOLDOWN[r["coin"]] = time.monotonic() + GRAPH_COOLDOWN_S
     # fix: il `with` del ThreadPoolExecutor fa shutdown(wait=True) e blocca
     # il ciclo sui thread dei grafi andati in timeout (non killabili).
@@ -843,7 +847,7 @@ def main(argv=None):
                        "fng": (fng_v, fng_c), "heads": heads,
                        "ofi_z": r["ofi_z"]}
                 jobs.append((r, pre))
-            _run_graphs_parallel(cfg, c, ex, jobs)
+            _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=t_cycle)
             _touch_heartbeat()
             store.backup_if_due()
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")

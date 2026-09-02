@@ -48,11 +48,27 @@ CYCLE_MAX_RUNTIME_S = int(os.getenv("CYCLE_MAX_RUNTIME_S", "1200"))  # tetto cic
 # non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).
 GRAPH_COOLDOWN_S = int(os.getenv("HL_GRAPH_COOLDOWN_S", "3600"))
 _GRAPH_COOLDOWN = {}  # coin -> monotonic ts fino a cui skippare
+# grafo zombie: completato DOPO l'hard timeout. Il suo esito va ignorato
+# (un ordine su contesto ~20min stantio e' peggio di nessun ordine).
+# Token per-run: la marcatura del run N non cancella il run N+1 della
+# stessa coin (lo zombie puo' sopravvivere al cooldown di 1h).
+_RUN_SEQ = {}    # coin -> contatore incrementato a ogni run_cycle
+_ABANDONED = {}  # coin -> seq del run abbandonato dal timeout
+
+
+def _mark_abandoned(coin: str):
+    """Segna il run corrente della coin come abbandonato dal timeout.
+
+    _ABANDONED[coin] = seq del run in timeout; run_cycle confronta il
+    proprio seq all'uscita del grafo con questa marcatura."""
+    _ABANDONED[coin] = _RUN_SEQ.get(coin, 0)
 
 
 def graph_in_cooldown(coin: str) -> bool:
     ts = _GRAPH_COOLDOWN.get(coin)
     return ts is not None and time.monotonic() < ts
+
+
 MONITOR_INTERVAL_S = int(os.getenv("HL_MONITOR_INTERVAL_S", "60"))
 
 
@@ -471,6 +487,7 @@ def maintain_trailing(c, cfg, ex):
 def run_cycle(cfg, c, ex, coin, pre=None):
     """Un ciclo completo su un coin: dati->segnale->grafo->rischio->
     esecuzione+stop->verifica. Ritorna dict esito (per test/report)."""
+    seq = _RUN_SEQ[coin] = _RUN_SEQ.get(coin, 0) + 1
     t_start = time.time()
     _touch_heartbeat()
     held_it = next((dict(i) for i in store.intents_open() if i["coin"] == coin),
@@ -544,6 +561,14 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     gextra = {"llm_side": g["decision"]["side"], "rationale": g["decision"].get("rationale", ""),
               "panel": g["panel"], "debate": g["debate"],
               "llm_ms": round((time.time() - _t) * 1000)}
+    # zombie: grafo completato DOPO l'hard timeout -> esito stantio, non
+    # agire (ne' ordine ne' reversal): solo log e skip. Il token seq
+    # distingue questo run da un eventuale run successivo della coin.
+    if _ABANDONED.get(coin) == seq:
+        log(f"[cycle] {coin}: run #{seq} abbandonato a timeout dopo "
+            f"{time.time() - t_start:.0f}s - esito grafo ignorato "
+            f"(PM={gextra['llm_side']})")
+        return done(False, "grafo zombie: timeout", gextra)
     # ponytail: il grafo dura ~35 min -> il mid del pre e' stantio e l'IOC
     # a 50bps non filla; refresh qui cosi' sizing/veto/stop/fill vedono il
     # prezzo corrente. Upgrade: limit entry con slippage budget esplicito.
@@ -755,6 +780,8 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         _log_cycle(stage="error", coin=r["coin"],
                    error=f"graph timeout {budget:.0f}s")
         _GRAPH_COOLDOWN[r["coin"]] = time.monotonic() + GRAPH_COOLDOWN_S
+        _mark_abandoned(r["coin"])  # zombie: se completa dopo, run_cycle
+        #                      lo scopre da solo e non piazza ordini
     # fix: il `with` del ThreadPoolExecutor fa shutdown(wait=True) e blocca
     # il ciclo sui thread dei grafi andati in timeout (non killabili).
     pool.shutdown(wait=False)

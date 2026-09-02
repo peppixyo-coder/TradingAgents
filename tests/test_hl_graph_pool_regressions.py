@@ -50,9 +50,45 @@ def test_pool_shutdown_non_blocca():
     assert _time.monotonic() - t0 < 5  # non ha aspettato i 30s
 
 
+def test_zombie_run_marked_abandoned_no_order():
+    """Run abbandonato a timeout non agisce quando completa tardi (zombie).
+
+    Meccanica seq: _mark_abandoned fotografa il seq del run in timeout;
+    run_cycle confronta il proprio seq con la marcatura DOPO il grafo -
+    combacia -> skip senza ordini ne' reversal.
+    """
+    # run N in volo: seq assegnato all'ingresso di run_cycle
+    L._RUN_SEQ["ENA"] = 3
+    L._mark_abandoned("ENA")            # timeout handler marca il run 3
+    assert L._ABANDONED["ENA"] == 3
+    # zombie completa DOPO: seq 3 == marcatura -> check post-grafo True
+    assert L._ABANDONED["ENA"] == L._RUN_SEQ["ENA"]  # zombie: bloccato
+    # run N+1 (seq 4): la vecchia marcatura NON lo blocca
+    L._RUN_SEQ["ENA"] = 4
+    assert L._ABANDONED["ENA"] != L._RUN_SEQ["ENA"]
+    # pulizia
+    L._RUN_SEQ.pop("ENA", None)
+    L._ABANDONED.pop("ENA", None)
+
+
+def test_pool_timeout_marks_abandoned():
+    """Il ramo TIMEOUT di _run_graphs_parallel marca _ABANDONED col seq."""
+    # meccanica pura: il timeout handler marca il run in volo via seq
+    L._RUN_SEQ["ZOM"] = 5
+    L._mark_abandoned("ZOM")
+    assert L._ABANDONED["ZOM"] == 5
+    assert L._ABANDONED["ZOM"] == L._RUN_SEQ["ZOM"]  # zombie: bloccato
+    # pulizia
+    L._RUN_SEQ.pop("ZOM", None)
+    L._ABANDONED.pop("ZOM", None)
+
+
 if __name__ == "__main__":
     test_timeout_scalato_per_ondate()
     test_max_graph_workers_cap()
     test_max_graphs_per_cycle_budget()
     test_pool_shutdown_non_blocca()
-    print("OK: 4/4 regressioni A2 passate")
+    test_zombie_run_marked_abandoned_no_order()
+    test_pool_timeout_marks_abandoned()
+    print("OK: 6/6 regressioni passate")
+

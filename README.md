@@ -127,6 +127,11 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+Start order (Hyperliquid paper-trading stack): HyPaper first (`http://localhost:3000`),
+then 9router (`http://localhost:20128/v1`), then the bot/dashboard (`docker compose
+up -d --build` from the workspace root). The bot's 5-gate preflight checks all three
+and aborts otherwise; the dashboard only reads bot state, so it can start anytime.
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:

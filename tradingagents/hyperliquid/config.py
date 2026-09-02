@@ -12,7 +12,8 @@ class HLConfig:
     hypaper_url: str = "http://localhost:3000"
     router_url: str = "http://localhost:20128/v1"
     api_key: str = ""
-    model: str = "Combo-1"
+    quick_model: str = "Combo-2"   # pannello+dibattito custom / quick think upstream
+    deep_model: str = "Combo-1"    # decisione finale custom / deep think upstream
     # paper = mirror HyPaper senza firme; live = SDK firmato EIP-712, MAI attivabile
     # senza go esplicito dell'umano (fuori scope da mappa).
     trading_mode: str = "paper"
@@ -42,7 +43,10 @@ def load() -> HLConfig:
             os.getenv("OPENAI_BASE_URL", "http://localhost:20128/v1"),
         ).rstrip("/"),
         api_key=os.getenv("OPENAI_API_KEY", ""),
-        model=os.getenv("TRADINGAGENTS_QUICK_THINK_LLM", os.getenv("TRADINGAGENTS_MODEL", "Combo-1")),
+        quick_model=os.getenv("TRADINGAGENTS_QUICK_THINK_LLM",
+                              os.getenv("TRADINGAGENTS_MODEL", "Combo-2")),
+        deep_model=os.getenv("TRADINGAGENTS_DEEP_THINK_LLM",
+                             os.getenv("TRADINGAGENTS_MODEL", "Combo-1")),
         trading_mode=os.getenv("TRADING_MODE", "paper"),
         wallet=os.getenv("HYPAPER_WALLET", "spike-agent-01"),
         paper_seed_balance=float(os.getenv("PAPER_SEED_BALANCE", "10000")),

@@ -52,11 +52,12 @@ def run_all(cfg):
         assert len(c.all_mids()) >= n_perp, "all_mids incompleto vs registry"
 
     def _router():
-        out = _post_json(f"{cfg.router_url}/chat/completions",
-                         {"model": cfg.model, "max_tokens": 5,
-                          "messages": [{"role": "user", "content": "ping"}]},
-                         key=cfg.api_key)
-        assert out.get("choices"), out
+        for label, m in (("quick", cfg.quick_model), ("deep", cfg.deep_model)):
+            out = _post_json(f"{cfg.router_url}/chat/completions",
+                             {"model": m, "max_tokens": 5,
+                              "messages": [{"role": "user", "content": "ping"}]},
+                             key=cfg.api_key, timeout=60)
+            assert out.get("choices"), (label, m, out)
 
     def _store():
         store.init()
@@ -71,7 +72,7 @@ def run_all(cfg):
     check(f"HyPaper su {cfg.hypaper_url}", _hypaper)
     check(f"wallet '{cfg.wallet}' leggibile", _wallet)
     check(f"universo dinamico raggiungibile", _universe)
-    check(f"9router {cfg.router_url} modello {cfg.model}", _router)
+    check(f"9router {cfg.router_url} modelli quick={cfg.quick_model} deep={cfg.deep_model}", _router)
     check(f"store SQLite scrivibile ({store.DB})", _store)
     check(f"spazio disco su {os.path.dirname(store.DB) or '.'} >= 500MB", _disk)
 

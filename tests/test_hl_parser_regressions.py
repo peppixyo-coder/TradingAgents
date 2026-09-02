@@ -53,7 +53,7 @@ def test_chat_senza_choices_restituisce_vuoto():
     A._post = _fake_post  # monkeypatch modulo
     try:
         out = A._chat(SimpleNamespace(router_url="http://x", api_key="k",
-                                      model="m"), "sys", "user")
+                                      quick_model="Q", deep_model="D"), "sys", "user")
         assert out == "", "risposta senza choices deve dare '' (degrada)"
     finally:
         A._post = orig  # ripristina la funzione reale del modulo
@@ -102,10 +102,32 @@ def test_run_graph_degrada_a_flat_su_router_giu():
     orig = A._post
     A._post = _post_bomb
     try:
-        cfg = SimpleNamespace(router_url="http://x", api_key="k", model="m")
+        cfg = SimpleNamespace(router_url="http://x", api_key="k",
+                               quick_model="Q", deep_model="D")
         out = A.run_graph(cfg, "ctx di test")
         assert out["decision"]["side"] == "flat"
         assert "non-JSON" in out["decision"]["rationale"]
+    finally:
+        A._post = orig
+
+
+def test_chat_split_quick_deep():
+    """Split modelli: pannello+dibattito usano quick_model, decisione deep_model."""
+    from types import SimpleNamespace
+
+    seen = []
+
+    def _post_rec(url, key, payload, timeout=180, retries=2):
+        seen.append(payload["model"])
+        return {"choices": [{"message": {"content": '{"side":"flat"}'}}]}
+
+    orig = A._post
+    A._post = _post_rec
+    try:
+        cfg = SimpleNamespace(router_url="http://x", api_key="k",
+                              quick_model="Q", deep_model="D")
+        A.run_graph(cfg, "ctx di test")
+        assert seen == ["Q", "Q", "D"]
     finally:
         A._post = orig
 
@@ -119,4 +141,5 @@ if __name__ == "__main__":
     test_parse_decision_doppio_oggetto_malformato()
     test_parse_decision_solo_spurio()
     test_run_graph_degrada_a_flat_su_router_giu()
-    print("OK: 8/8 regressioni parser E passate")
+    test_chat_split_quick_deep()
+    print("OK: 9/9 regressioni parser + split passate")

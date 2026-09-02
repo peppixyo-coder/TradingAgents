@@ -1,4 +1,4 @@
-"""Grafo agenti Combo-1: pannello analisti -> dibattito bull/bear -> decisione JSON.
+"""Grafo agenti LLM: pannello analisti (quick) -> dibattito bull/bear (quick) -> decisione JSON (deep).
 
 ponytail: grafo lineare a 3 chiamate via HTTP raw (pattern provato dal test
 di connettivita': il router incapsula il JSON in text/event-stream con padding,
@@ -69,9 +69,9 @@ def _post(base_url, key, payload, timeout=180, retries=2):
     return obj
 
 
-def _chat(cfg, system, user, max_tokens=2000):
+def _chat(cfg, system, user, max_tokens=2000, deep=False):
     resp = _post(cfg.router_url, cfg.api_key, {
-        "model": cfg.model,
+        "model": cfg.deep_model if deep else cfg.quick_model,
         "max_tokens": max_tokens,
         "temperature": 0.2,
         "messages": [
@@ -114,9 +114,9 @@ def run_graph(cfg, ctx):
     Ritorna dict {panel, debate, decision}; side e' firmato dall'LLM,
     conviction resta meccanico a valle (risk.py).
     """
-    def _safe_chat(system, user):
+    def _safe_chat(system, user, deep=False):
         try:
-            return _chat(cfg, system, user)
+            return _chat(cfg, system, user, deep=deep)
         except Exception:  # router giu': il grafo degrada a flat, non raise
             return ""
 
@@ -130,7 +130,7 @@ def run_graph(cfg, ctx):
     j, raw = None, ""
     for attempt in range(3):
         try:
-            raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS, decide_user) or ""
+            raw = _chat(cfg, DECIDE_SYS + "\n" + LEV_SYS, decide_user, deep=True) or ""
         except Exception:  # router giu'/timeout dopo i retry HTTP: degrada a flat
             raw = ""
         j = _parse_decision(raw)

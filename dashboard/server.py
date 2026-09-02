@@ -514,7 +514,7 @@ class Agg:
             "logs": self.logs_tail(),
             "cfg": {
                 "mode": self.cfg.trading_mode, "wallet": self.cfg.wallet,
-                "watchlist": self.watched(), "model": self.cfg.model,
+                "watchlist": self.watched(), "model": f"{self.cfg.quick_model}/{self.cfg.deep_model}",
                 "base_frac": self.cfg.base_frac, "lev_cap": self.cfg.lev_cap,
                 "daily_dd": self.cfg.daily_dd, "weekly_dd": self.cfg.weekly_dd,
                 "atr_stop_mult": self.cfg.atr_stop_mult, "signal_z_min": self.cfg.signal_z_min,
@@ -555,7 +555,10 @@ async def api_snapshot():
     trades = agg.build_trades()
     agg.last_kpis = agg.kpis(trades)
     return {"kpis": agg.last_kpis, "positions": agg.positions_live(),
-            "mids": agg.mids}
+            "mids": agg.mids,
+            "container_cfg": {"mode": agg.cfg.trading_mode, "wallet": agg.cfg.wallet,
+                              "watchlist": agg.watched(),
+                              "model": f"{agg.cfg.quick_model}/{agg.cfg.deep_model}"}}
 
 
 @app.get("/api/trades")

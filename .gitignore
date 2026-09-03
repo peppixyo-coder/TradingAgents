@@ -225,3 +225,4 @@ reports/
 # Runtime locale del bot (DB paper, heartbeat, log) e artifact spike
 state/
 spikes/out/
+archive/

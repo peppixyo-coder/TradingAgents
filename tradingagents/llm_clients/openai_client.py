@@ -14,13 +14,29 @@ from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
 
-# Throttle inter-callate LLM: spazia le richieste nel tempo invece di
-# burstare (rate limit dei free tier e' sul NUMERO di chiamate, non sul
-# tempo). 0 = disattivato; serializza su lock cosi' vale anche con piu'
-# grafi in parallelo. Configurato dal bot via TRADINGAGENTS_LLM_CALL_DELAY_S.
+# Throttle inter-callate LLM (T33): spazia le richieste nel tempo invece di
+# burstare. Il delay e' ADATTIVO: base x worker attivi (thread che hanno
+# chiamato negli ultimi _ACTIVE_WINDOW_S), cosi' N grafi in parallelo =>
+# Nx pausa e il rate limit (chiamate/min, non tempo) resta sotto soglia.
+# Base 0 = throttle disattivato; serializza su lock cosi' vale anche con
+# piu' grafi in parallelo. Base via TRADINGAGENTS_LLM_CALL_DELAY_S.
 _CALL_DELAY_S = float(os.getenv("TRADINGAGENTS_LLM_CALL_DELAY_S", "0"))
+_ACTIVE_WINDOW_S = 60.0
 _THROTTLE_LOCK = threading.Lock()
+_ACTIVE_LOCK = threading.Lock()
+_ACTIVE = {}  # thread ident -> monotonic ultima chiamata
 _LAST_CALL = 0.0
+
+
+def _active_workers():
+    """Worker LLM attivi: thread con una chiamata nella finestra, incluso
+    questo (sta per chiamare). Pota le registrazioni fuori finestra."""
+    now = time.monotonic()
+    with _ACTIVE_LOCK:
+        for k in [k for k, t in _ACTIVE.items() if now - t > _ACTIVE_WINDOW_S]:
+            del _ACTIVE[k]
+        _ACTIVE[threading.get_ident()] = now
+        return max(1, len(_ACTIVE))
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -46,7 +62,8 @@ class NormalizedChatOpenAI(ChatOpenAI):
         global _LAST_CALL
         if _CALL_DELAY_S > 0:
             with _THROTTLE_LOCK:
-                wait = _LAST_CALL + _CALL_DELAY_S - time.monotonic()
+                wait = (_LAST_CALL + _CALL_DELAY_S * _active_workers()
+                        - time.monotonic())
                 if wait > 0:
                     time.sleep(wait)
                 _LAST_CALL = time.monotonic()

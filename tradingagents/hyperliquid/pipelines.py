@@ -82,9 +82,10 @@ def _graph(asset_class: str, exec_ctx: str, coin: str):
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
-    conf = {**DEFAULT_CONFIG,
-            "max_debate_rounds": 1,        # decisione T26 ridotta: carico LLM
-            "max_risk_discuss_rounds": 1}  # ~30% in meno per ciclo
+    # T33: debate/risk rounds tornano a 2+2 governati da DEFAULT_CONFIG
+    # (TRADINGAGENTS_MAX_DEBATE_ROUNDS/_RISK_ROUNDS nel compose); revocato
+    # l'override a 1 della decisione T26.
+    conf = {**DEFAULT_CONFIG}
     mem_dir = os.path.dirname(DEFAULT_CONFIG["memory_log_path"])
     safe = coin.replace(":", "_").replace("/", "_").replace("\\", "_")
     conf["memory_log_path"] = os.path.join(mem_dir, f"trading_memory_{safe}.md")

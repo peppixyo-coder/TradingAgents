@@ -1,7 +1,9 @@
 """RiskManager: traduce (side, conviction) in ordine dimensionato; hard-veto su capitale.
 
-Contratto ratificato: hard-veto su DD giornaliero (-5%), settimanale (-10%),
-MAX_CONCURRENT=5 posizioni aperte, MIN_NOTIONAL=$10 sotto cui skip. La LEVA
+Contratto ratificato (rev. T33): hard-veto su DD giornaliero (-5%),
+settimanale (-10%) e MIN_NOTIONAL=$10 sotto cui skip. Nessun cap fisso sul
+numero di posizioni aperte (MAX_CONCURRENT revocato): i limiti restano di
+capitale (10%/asset, cluster correlati<=3, margine libero). La LEVA
 e' scelta dal Trader Agent per ogni trade: nessun cap per-posizione nel codice.
 Il RiskManager la clippa solo al massimo consentito dall'exchange per l'asset
 e valuta la leva TOTALE del portfolio come advisory con riduzione di size.
@@ -70,7 +72,6 @@ def size_order(cfg, balance, mid, sigma, atr, conviction,
 MAX_ASSET_FRAC = 0.10      # esposizione max per singolo asset (% equity)
 CORR_THRESHOLD = 0.7       # |rho| close 30d oltre il quale due asset sono correlati
 CORR_MAX_CLUSTER = 3       # max posizioni contemporanee in un cluster correlato
-MAX_CONCURRENT = 5        # max posizioni aperte simultaneamente (hard-veto)
 
 
 def pos_value(p):
@@ -97,8 +98,6 @@ def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
         return ["EQUITY<=0"], None
     reasons, advisory = [], None
     open_ps = [p for p in asset_positions if float(p["position"]["szi"]) != 0]
-    if coin not in {p["position"]["coin"] for p in open_ps} and len(open_ps) >= MAX_CONCURRENT:
-        reasons.append(f"MAX_CONCURRENT {len(open_ps)}>={MAX_CONCURRENT} (nuova posizione)")
     expo = {p["position"]["coin"]: pos_value(p) for p in open_ps}
     if (expo.get(coin, 0.0) + notional) / eq > MAX_ASSET_FRAC:
         reasons.append(f"ASSET_CAP>{MAX_ASSET_FRAC:.0%}")

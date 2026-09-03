@@ -28,6 +28,7 @@ L.maintain_trailing = fake_maintain
 L.MONITOR_INTERVAL_S = 0.2
 L.MAX_GRAPH_WORKERS = 2
 L.GRAPH_TIMEOUT_S = 10
+L.GRAPH_STAGGER_S = 0  # T33: nessuna pausa nel selfcheck
 L.log = lambda *a, **k: None
 L._log_cycle = lambda *a, **k: None
 

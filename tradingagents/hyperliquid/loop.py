@@ -44,6 +44,7 @@ MAX_GRAPH_WORKERS = int(os.getenv("HL_MAX_GRAPH_WORKERS", "3"))  # grafi paralle
 GRAPH_TIMEOUT_S = int(os.getenv("PER_ASSET_GRAPH_TIMEOUT_S")     # hard timeout grafo
                       or os.getenv("HL_GRAPH_TIMEOUT_S", "600"))  # (nome legacy)
 CYCLE_MAX_RUNTIME_S = int(os.getenv("CYCLE_MAX_RUNTIME_S", "1200"))  # tetto ciclo
+GRAPH_STAGGER_S = float(os.getenv("HL_GRAPH_STAGGER_S", "15"))  # T33: offset tra avvii
 # ticket A: dopo un errore/timeout di grafo la coin va in cooldown -
 # non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).
 GRAPH_COOLDOWN_S = int(os.getenv("HL_GRAPH_COOLDOWN_S", "3600"))
@@ -733,7 +734,9 @@ def _monitor_loop(c, cfg, ex):
                 log(f"[monitor] ERRORE {fn.__name__}: {e!r}")
         time.sleep(MONITOR_INTERVAL_S)
 def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
-    """Gira i grafi LLM in parallelo (fix a) con hard timeout (fix c).
+    """Gira i grafi LLM in parallelo (fix a) con hard timeout (fix c) e avvio
+    scaglionato di GRAPH_STAGGER_S tra job (T33: niente burst di chiamate
+    LLM sul router al primo agente).
 
     Ogni run_cycle e' indipendente (grafo fresco per coin, memoria per-coin);
     l'esecuzione degli ordini resta serializzata da _ORDER_LOCK dentro
@@ -745,8 +748,15 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     t0 = time.time()
     workers = min(MAX_GRAPH_WORKERS, len(jobs))
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph")
-    futs = {pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre): r
-            for r, pre in jobs}
+    # T33: staggered start - i grafi partono scaglionati: il burst di
+    # chiamate LLM al primo agente dei grafi e' la fonte principale di 429.
+    futs = {}
+    for i, (r, pre) in enumerate(jobs):
+        if i:
+            time.sleep(GRAPH_STAGGER_S)
+        futs[pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre)] = r
+        log(f"[loop] graph {i + 1}/{len(jobs)} {r['coin']} start "
+            f"(offset {i * GRAPH_STAGGER_S:.0f}s)")
     # wait() ha un budget TOTALE: con workers<len(jobs) (es. seriale) un solo
     # grafo lento esaurirebbe il budget bloccando gli altri. Si scala per
     # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S,
@@ -756,7 +766,8 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     if t_cycle is not None:
         budget = min(budget, max(CYCLE_MAX_RUNTIME_S - (time.time() - t_cycle), 60))
     log(f"[loop] grafi: {len(jobs)} job, {workers} worker, budget {budget:.0f}s "
-        f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves})")
+        f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves}, "
+        f"stagger {GRAPH_STAGGER_S:.0f}s)")
     done_set, not_done = wait(futs, timeout=budget)
     for fut in done_set:
         r = futs[fut]

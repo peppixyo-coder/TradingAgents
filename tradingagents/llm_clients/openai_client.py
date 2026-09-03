@@ -1,5 +1,7 @@
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -11,6 +13,14 @@ from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
+
+# Throttle inter-callate LLM: spazia le richieste nel tempo invece di
+# burstare (rate limit dei free tier e' sul NUMERO di chiamate, non sul
+# tempo). 0 = disattivato; serializza su lock cosi' vale anche con piu'
+# grafi in parallelo. Configurato dal bot via TRADINGAGENTS_LLM_CALL_DELAY_S.
+_CALL_DELAY_S = float(os.getenv("TRADINGAGENTS_LLM_CALL_DELAY_S", "0"))
+_THROTTLE_LOCK = threading.Lock()
+_LAST_CALL = 0.0
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -33,6 +43,13 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
+        global _LAST_CALL
+        if _CALL_DELAY_S > 0:
+            with _THROTTLE_LOCK:
+                wait = _LAST_CALL + _CALL_DELAY_S - time.monotonic()
+                if wait > 0:
+                    time.sleep(wait)
+                _LAST_CALL = time.monotonic()
         return normalize_content(super().invoke(input, config, **kwargs))
 
     def with_structured_output(self, schema, *, method=None, **kwargs):

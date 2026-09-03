@@ -70,6 +70,7 @@ def size_order(cfg, balance, mid, sigma, atr, conviction,
 MAX_ASSET_FRAC = 0.10      # esposizione max per singolo asset (% equity)
 CORR_THRESHOLD = 0.7       # |rho| close 30d oltre il quale due asset sono correlati
 CORR_MAX_CLUSTER = 3       # max posizioni contemporanee in un cluster correlato
+MAX_CONCURRENT = 5        # max posizioni aperte simultaneamente (hard-veto)
 
 
 def pos_value(p):
@@ -96,6 +97,8 @@ def portfolio_veto(cfg, eq, coin, notional, asset_positions, corr_count):
         return ["EQUITY<=0"], None
     reasons, advisory = [], None
     open_ps = [p for p in asset_positions if float(p["position"]["szi"]) != 0]
+    if coin not in {p["position"]["coin"] for p in open_ps} and len(open_ps) >= MAX_CONCURRENT:
+        reasons.append(f"MAX_CONCURRENT {len(open_ps)}>={MAX_CONCURRENT} (nuova posizione)")
     expo = {p["position"]["coin"]: pos_value(p) for p in open_ps}
     if (expo.get(coin, 0.0) + notional) / eq > MAX_ASSET_FRAC:
         reasons.append(f"ASSET_CAP>{MAX_ASSET_FRAC:.0%}")

@@ -811,7 +811,7 @@ def main(argv=None):
     store.init()
     c = HyPaperClient(cfg.hypaper_url)
     ex = HyperliquidExecutor(c, cfg)
-    interval = int(os.getenv("HL_SCAN_INTERVAL", "900"))
+    interval = int(os.getenv("HL_SCAN_INTERVAL", "1800"))
     cycles_left = next((int(a.split("=", 1)[1]) for a in argv
                         if a.startswith("--cycles=")), 0)
     if "--close-all" in argv:

@@ -14,29 +14,20 @@ from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
 
-# Throttle inter-callate LLM (T33): spazia le richieste nel tempo invece di
-# burstare. Il delay e' ADATTIVO: base x worker attivi (thread che hanno
-# chiamato negli ultimi _ACTIVE_WINDOW_S), cosi' N grafi in parallelo =>
-# Nx pausa e il rate limit (chiamate/min, non tempo) resta sotto soglia.
-# Base 0 = throttle disattivato; serializza su lock cosi' vale anche con
-# piu' grafi in parallelo. Base via TRADINGAGENTS_LLM_CALL_DELAY_S.
+# Semaforo LLM (T34): max N chiamate in volo verso 9router per TUTTO il
+# bot (default 1). I 3 worker dei grafi competono sullo stesso semaforo:
+# round-robin naturale, il pool Combo-2 non satura, 9router resta sul
+# modello veloce senza fallback su modelli lenti. Il semaforo tiene la
+# chiamata DENTRO — il difetto T33: la lock copriva solo lo spazio tra
+# gli start, lasciando 3 chiamate in volo insieme — e ogni uscita lascia
+# passare il prossimo. _CALL_DELAY_S è il gap obbligato tra la FINE di
+# una chiamata e lo start della successiva (anti-burst).
+# _MAX_INFLIGHT <= 0 disattiva throttle e semaforo.
 _CALL_DELAY_S = float(os.getenv("TRADINGAGENTS_LLM_CALL_DELAY_S", "0"))
-_ACTIVE_WINDOW_S = 60.0
+_MAX_INFLIGHT = int(os.getenv("TRADINGAGENTS_LLM_MAX_INFLIGHT", "1"))
 _THROTTLE_LOCK = threading.Lock()
-_ACTIVE_LOCK = threading.Lock()
-_ACTIVE = {}  # thread ident -> monotonic ultima chiamata
 _LAST_CALL = 0.0
-
-
-def _active_workers():
-    """Worker LLM attivi: thread con una chiamata nella finestra, incluso
-    questo (sta per chiamare). Pota le registrazioni fuori finestra."""
-    now = time.monotonic()
-    with _ACTIVE_LOCK:
-        for k in [k for k, t in _ACTIVE.items() if now - t > _ACTIVE_WINDOW_S]:
-            del _ACTIVE[k]
-        _ACTIVE[threading.get_ident()] = now
-        return max(1, len(_ACTIVE))
+_SEMAPHORE = threading.Semaphore(max(1, _MAX_INFLIGHT))
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -46,12 +37,11 @@ class NormalizedChatOpenAI(ChatOpenAI):
     (reasoning, text, etc.). ``invoke`` normalizes to string for
     consistent downstream handling.
 
-    ``with_structured_output`` consults the per-model capability table
-    (``capabilities.get_capabilities``) to pick the method and to decide
-    whether ``tool_choice`` may be sent. Models that reject ``tool_choice``
-    (e.g. DeepSeek V4 and reasoner — per their official tool-calling
-    guide) still bind the schema as a tool, but no ``tool_choice``
-    parameter is sent.
+    ``with_structured_output`` consults the llm config's capabilities table
+    to pick the method and to decide whether ``tool_choice`` may be sent.
+    Models that reject ``tool_choice`` (e.g. DeepSeek V4 and reasoner - per
+    their official tool-calling guide) still bind the schema as a tool, but
+    no ``tool_choice`` parameter is sent.
 
     Provider-specific quirks beyond structured-output (e.g. DeepSeek's
     reasoning_content roundtrip) live in subclasses so this base class
@@ -60,14 +50,22 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         global _LAST_CALL
-        if _CALL_DELAY_S > 0:
-            with _THROTTLE_LOCK:
-                wait = (_LAST_CALL + _CALL_DELAY_S * _active_workers()
-                        - time.monotonic())
-                if wait > 0:
-                    time.sleep(wait)
-                _LAST_CALL = time.monotonic()
-        return normalize_content(super().invoke(input, config, **kwargs))
+        if _MAX_INFLIGHT <= 0:  # throttle disattivato
+            return normalize_content(super().invoke(input, config, **kwargs))
+        with _SEMAPHORE:
+            try:
+                if _CALL_DELAY_S > 0:
+                    with _THROTTLE_LOCK:
+                        wait = _LAST_CALL + _CALL_DELAY_S - time.monotonic()
+                        if wait > 0:
+                            time.sleep(wait)
+                return normalize_content(super().invoke(input, config, **kwargs))
+            finally:
+                # il semaforo esce solo a chiamata finita: il prossimo
+                # worker parte a fine chiamata + delay (non a start + delay)
+                if _CALL_DELAY_S > 0:
+                    with _THROTTLE_LOCK:
+                        _LAST_CALL = time.monotonic()
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)
@@ -78,7 +76,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
             )
         method = method or caps.preferred_structured_method
         # When the model rejects tool_choice, suppress langchain's hardcoded
-        # value. The schema is still bound as a tool — exactly what
+        # value. The schema is still bound as a tool - exactly what
         # DeepSeek's official tool-calling examples do.
         if method == "function_calling" and not caps.supports_tool_choice:
             kwargs.setdefault("tool_choice", None)

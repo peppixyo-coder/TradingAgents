@@ -120,6 +120,18 @@ class Agg:
                 self.hl_ws_ok = False
                 await asyncio.sleep(5)
 
+    async def mids_rest_loop(self):
+        # I partial WS del mirror non portano mai i coin HIP-3 (T30): senza
+        # refresh REST i loro mark congelano allo snapshot di boot.
+        while True:
+            try:
+                snap = await asyncio.to_thread(
+                    self.rest, {"type": "allMids"})
+                self.mids.update({k: float(v) for k, v in snap.items()})
+            except Exception:
+                pass  # ponytail: transitorio -> il WS continua a servire i nativi
+            await asyncio.sleep(30)
+
     def rest(self, payload):
         out = self.c._post("/info", payload)
         self.last_rest_ok = time.time()
@@ -681,10 +693,12 @@ async def startup():
     # ponytail: load_cycles/backfill_equity qui possono bloccare il bind di
     # uvicorn su un wedge FUSE; snapshot_slow li richiama comunque ogni 5s.
     print("[startup] begin", flush=True)
+    asyncio.create_task(agg.mids_rest_loop())
     asyncio.create_task(agg.hl_ws_loop())
     asyncio.create_task(fast_loop())
     asyncio.create_task(slow_loop())
     print("[startup] tasks created", flush=True)
+
 
 
 import faulthandler

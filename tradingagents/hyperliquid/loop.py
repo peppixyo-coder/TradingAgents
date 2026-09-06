@@ -472,7 +472,9 @@ def maintain_trailing(c, cfg, ex):
                     f"{it['stop_oid']} = {r.get('status')}; riprovo al ciclo dopo")
                 continue
         close_side = "short" if it["side"] == "long" else "long"
-        r = ex.place_trigger(it["coin"], close_side, it["qty"], cand, tpsl="sl")
+        r = ex.place_trigger(it["coin"], close_side,
+                             it["remaining_size"] or it["qty"], cand,
+                             tpsl="sl")
         if r.get("status") == "resting":
             store.intent_move_stop(it["id"], cand, r["oid"])
             moved += 1

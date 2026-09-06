@@ -78,6 +78,20 @@ def init():
         # backfill DB esistenti: remaining = qty finche' un TP non taglia
         conn.execute("UPDATE intents SET original_size=qty, remaining_size=qty "
                      "WHERE original_size IS NULL")
+        # T39: marcatura retroattiva delle chiusure amministrative
+        # (pre-fix MAX_CONCURRENT). La reason viene rinominata in-place per
+        # build_trades, che altrimenti la mapperrebbe a "MANUAL" generico.
+        try:
+            conn.execute("ALTER TABLE intents ADD COLUMN is_administrative "
+                         "INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE intents SET close_reason = 'administrative_close' "
+            "WHERE close_reason = 'cap-max-concurrent-violato-apertura-pre-fix'")
+        conn.execute(
+            "UPDATE intents SET is_administrative = 1 "
+            "WHERE close_reason = 'administrative_close'")
 
 
 def kv_get(k, default=None):

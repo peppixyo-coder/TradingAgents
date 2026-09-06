@@ -38,7 +38,8 @@ _CLOSE_KIND = {"stop-loss": "STOP", "trailing-stop": "TRAILING",
                "signal-reversal": "REVERSAL", "chiusura-manuale": "MANUAL",
                "position-gone": "STOP", "take-profit-full": "TP_FULL",
                "tp-full": "TP_FULL",
-               "partial-tp-stop": "TP_PARTIAL+STOP"}
+               "partial-tp-stop": "TP_PARTIAL+STOP",
+               "administrative_close": "ADM"}
 
 
 def _parse_ts(s):
@@ -241,7 +242,9 @@ class Agg:
             self.day_key = day
             self.day_start_eq = eq_now
 
-        closed = [t for t in trades if t["pnl"] is not None]
+        # T39: metriche pulite - le chiusure amministrative (pre-fix
+        # MAX_CONCURRENT) non sono decisioni di trading, restano solo in tabella.
+        closed = [t for t in trades if t["pnl"] is not None and not t.get("adm")]
         pnls = [t["pnl"] for t in closed]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
@@ -432,25 +435,32 @@ class Agg:
             # prezzi registrati nel DB quando la chiusura li conosce; candela
             # solo fallback (reversal/manuale/nessun motivo).
             reason = (it["close_reason"] or "").strip().lower()
+            # T38: rem derivato - reconcile puo' azzerare remaining_size; la
+            # size residua vera e' qty - tagli TP eseguiti (0 se tutti pieni).
+            rem = float(it["remaining_size"] or 0) or (
+                qty - sum(float(it[f"tp{n}_size"] or 0) for n in hit))
             xp, pnl = None, None
             if reason == "tp-full" and len(hit) == 3:
                 xp, pnl = float(it["tp3_px"]), pnl_tps
             elif reason in ("stop-loss", "trailing-stop", "partial-tp-stop",
                             "position-gone") and it["stop_px"]:
                 xp = float(it["stop_px"])
-                rem = float(it["remaining_size"] or it["qty"])
                 pnl = round((pnl_tps or 0) + (xp - entry) * rem * sgn, 2)
             if xp is None and tcs:
                 xp = self.exit_px(it["coin"], tcs)
                 pnl = round((xp - entry) * qty * sgn, 2) if xp else None
-            # ponytail: fee stimata taker (0.035%) su entrambe le gambe; HyPaper non
-            # espone i fill reali (userFills rotto). Upgrade: sink Postgres HyPaper.
-            fee = round((entry + (xp or entry)) * qty * TAKER_FEE, 4) if xp else None
+            # ponytail: fee stimata taker (0.035%) sulle gambe reali: ingresso
+            # su qty, uscita su tagli TP + residuo. HyPaper non espone i fill
+            # (userFills rotto). Upgrade: sink Postgres HyPaper.
+            fee = round((entry * qty
+                         + sum(float(it[f"tp{n}_px"]) * float(it[f"tp{n}_size"] or 0)
+                               for n in hit)
+                         + (xp * rem if xp else 0)) * TAKER_FEE, 4) if xp else None
             out.append({
                 "id": it["id"], "coin": it["coin"], "side": it["side"],
                 "qty": qty, "notional": entry * qty,
                 "entry": entry, "exit": xp, "stop": it["stop_px"],
-                "pnl": pnl, "fee": fee,
+                "pnl": pnl, "fee": fee, "adm": bool(it.get("is_administrative")),
                 "lev": it["leverage"], "confidence": rec.get("confidence"),
                 "rationale": rec.get("rationale"), "panel": rec.get("panel"),
                 "debate": rec.get("debate"),

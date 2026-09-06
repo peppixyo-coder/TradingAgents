@@ -127,3 +127,6 @@ tr.xrow>td{background:var(--panel2)}
 .donut-c small{color:var(--faint);font-size:10px}
 
 footer{padding:14px 20px;color:var(--faint);font-size:11px;border-top:1px solid var(--line);margin-top:8px}
+
+/* T39: chiusure amministrative - attenuate, non sono decisioni di trading */
+tr.adm > td{opacity:.55}

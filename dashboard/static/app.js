@@ -282,12 +282,13 @@ function renderTrades() {
   const closed = rows.filter(t => t.status === "closed");
   const tot = closed.reduce((a, t) => a + t.pnl, 0);
   const wins = closed.filter(t => t.pnl > 0).length;
+  const adm = closed.filter(t => t.adm).length;
   $("#t-sum").innerHTML =
-    `<span>${rows.length} trade</span><span>chiusi <b>${closed.length}</b></span>` +
+    `<span>${rows.length} trade</span><span>chiusi <b>${closed.length}</b>${adm ? ` (${adm} adm)` : ""}</span>` +
     `<span>P&L <b class="${cls(tot)}">${usd(tot)}</b></span>` +
     `<span>win <b>${closed.length ? Math.round(wins / closed.length * 100) : 0}%</b></span>`;
   $("#tbl-trades tbody").innerHTML = rows.map(t => `
-    <tr class="click" data-id="${t.id}">
+    <tr class="click${t.adm ? " adm" : ""}" data-id="${t.id}">
       <td>${t.id}</td><td>${t.tsOpen}</td><td>${t.coin}</td>
       <td class="${t.side}">${t.side}</td><td>${usd(t.notional)}</td>
       <td>${px(t.entry)}</td><td>${t.exit != null ? px(t.exit) : "—"}</td>

@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from tradingagents.hyperliquid import store
 from tradingagents.hyperliquid.config import load
-from tradingagents.hyperliquid.data import HyPaperClient
+from tradingagents.hyperliquid.data import DataError, HyPaperClient
 from tradingagents.hyperliquid.loop import equity, load_dotenv
 
 load_dotenv()
@@ -123,15 +123,29 @@ class Agg:
 
     async def mids_rest_loop(self):
         # I partial WS del mirror non portano mai i coin HIP-3 (T30): senza
-        # refresh REST i loro mark congelano allo snapshot di boot.
+        # refresh REST i loro mark congelano allo snapshot di boot. L'allMids
+        # va dal MIRROR (round 2 T35): il routing di data.py manda i payload
+        # /info senza "user" su mainnet, il cui allMids globale non copre i
+        # coin HIP-3 -> refresh che non rinfresca nulla. Col mirror i mark
+        # coincidono anche con l'uPnL, che il paper engine calcola col suo mid.
         while True:
             try:
                 snap = await asyncio.to_thread(
-                    self.rest, {"type": "allMids"})
+                    self.rest_mirror, {"type": "allMids"})
                 self.mids.update({k: float(v) for k, v in snap.items()})
             except Exception:
                 pass  # ponytail: transitorio -> il WS continua a servire i nativi
             await asyncio.sleep(30)
+
+    def rest_mirror(self, payload):
+        """POST /info direttamente sul mirror HyPaper (bypass routing mainnet)."""
+        r = self.c.s.post(self.c.base + "/info", json=payload, timeout=15)
+        r.raise_for_status()
+        body = r.json()
+        if isinstance(body, dict) and body.get("status") == "err":
+            raise DataError(f"mirror /info: {body}")
+        self.last_rest_ok = time.time()
+        return body
 
     def rest(self, payload):
         out = self.c._post("/info", payload)

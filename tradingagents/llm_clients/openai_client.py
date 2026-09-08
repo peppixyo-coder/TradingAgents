@@ -33,7 +33,11 @@ _SEMAPHORE = threading.Semaphore(max(1, _MAX_INFLIGHT))
 # proprio budget (loop._run_one) prima di run_cycle; invoke() oltre la
 # scadenza rifiuta la chiamata invece di tenere il semaforo T34 per ore
 # (i thread Python non sono killabili: l'abort avviene alla prossima
-# invoke, PRIMA di toccare il semaforo). Key: ident -> (thread, deadline).
+# invoke, PRIMA di toccare il semaforo).
+# T42: budget a PILA per finestre annidate - il worker arma il per-asset
+# (rete di sicurezza su tutto run_cycle), run_upstream arma quello
+# upstream, piu' stretto, solo attorno a g.propagate. La scadenza
+# PIU' VICINA vince. Key: ident -> (thread, [(deadline, label), ...]).
 _ARMED: dict = {}
 
 
@@ -42,24 +46,34 @@ class BudgetAborted(RuntimeError):
 
 
 def arm_budget(label, seconds):
-    _ARMED[threading.get_ident()] = (threading.current_thread(),
-                                     time.monotonic() + seconds, label)
+    """Spinge un budget sul thread corrente (LIFO con disarm_budget)."""
+    stack = _ARMED.setdefault(threading.get_ident(),
+                              (threading.current_thread(), []))[1]
+    stack.append((time.monotonic() + seconds, label))
 
 
 def disarm_budget():
-    _ARMED.pop(threading.get_ident(), None)
+    """Chiude l'ultima finestra budget armata sul thread corrente."""
+    entry = _ARMED.get(threading.get_ident())
+    if entry is not None:
+        entry[1].pop()
+        if not entry[1]:
+            del _ARMED[threading.get_ident()]
 
 
 def sweep_armed_budgets():
-    """{ident: (ritardo_s, label)} per budget scaduti su thread vivi;
-    purga le entry dei thread morti (grafi zombie chiusi senza disarm)."""
+    """{ident: (ritardo_s, label)} per budget scaduti su thread vivi
+    (scadenza piu' stretta); purga le entry dei thread morti (grafi
+    zombie chiusi senza disarm)."""
     now = time.monotonic()
     out = {}
-    for ident, (t, dl, lab) in list(_ARMED.items()):
+    for ident, (t, stack) in list(_ARMED.items()):
         if not t.is_alive():
             del _ARMED[ident]
-        elif now > dl:
-            out[ident] = (now - dl, lab)
+        else:
+            dl, lab = min(stack)
+            if now > dl:
+                out[ident] = (now - dl, lab)
     return out
 
 
@@ -84,8 +98,11 @@ class NormalizedChatOpenAI(ChatOpenAI):
     def invoke(self, input, config=None, **kwargs):
         global _LAST_CALL
         e = _ARMED.get(threading.get_ident())  # T41: zombie oltre budget
-        if e and time.monotonic() > e[1]:
-            raise BudgetAborted(f"budget {e[2]} esaurito: nessuna nuova chiamata")
+        if e:
+            dl, lab = min(e[1])  # T42: vince la scadenza piu' stretta
+            if time.monotonic() > dl:
+                raise BudgetAborted(f"budget {lab} esaurito: "
+                                    "nessuna nuova chiamata")
         if _MAX_INFLIGHT <= 0:  # throttle disattivato
             return normalize_content(super().invoke(input, config, **kwargs))
         with _SEMAPHORE:

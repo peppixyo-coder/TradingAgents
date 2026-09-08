@@ -10,9 +10,11 @@ import datetime as dt
 import time
 import os
 import threading
+from openai import OpenAIError  # T42: errore provider (9router giu'), non dati
 
 from . import analysts
-from ..llm_clients.openai_client import BudgetAborted
+from ..llm_clients.openai_client import (BudgetAborted, arm_budget,
+                                         disarm_budget)
 
 # rating PM upstream -> contratto HL (conviction resta meccanico a valle)
 _RATING = {"buy": ("long", 0.7), "overweight": ("long", 0.6),
@@ -97,6 +99,11 @@ def _graph(asset_class: str, exec_ctx: str, coin: str):
         base_ctx(t, a) + "\n\n" + exec_ctx)
     return g
 
+# T42: budget del solo grafo upstream (fase LLM-pesante del ciclo), piu'
+# stretto del per-asset del worker (PER_ASSET_GRAPH_TIMEOUT_S in loop):
+# scaduto, invoke() alza BudgetAborted alla prossima chiamata LLM.
+UPSTREAM_TIMEOUT_S = int(os.getenv("UPSTREAM_GRAPH_TIMEOUT_S", "480"))
+
 
 def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
     """Pipeline non-crypto: grafo completo upstream sul ticker base,
@@ -117,13 +124,23 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
         raise RuntimeError(f"ticker Yahoo in cache errori (6h): {coin}")
     g = _graph(ac, exec_ctx, coin)
     t0 = dt.datetime.now()
+    # T42: budget upstream armato SOLO attorno a g.propagate, piu' stretto
+    # di quello per-asset del worker: il grafo e' la fase LLM-pesante.
+    arm_budget(f"upstream {coin}", UPSTREAM_TIMEOUT_S)
     try:
-        final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
+        final_state, rating = g.propagate(
+            _yf_ticker(coin), t0.strftime("%Y-%m-%d"))
     except BudgetAborted:
         raise  # T41: budget, non ticker rotto: NON avvelenare la cache yf (6h)
+    except OpenAIError:
+        raise  # T42: provider giu' (9router 502/429/timeout): i dati sono
+               # ok, niente veleno yf - il fallback custom raddoppierebbe
+               # la spesa LLM proprio quando il provider e' in difficolta'
     except Exception as e:
         yf_ticker_failed(coin)  # ticket C: non ripetere lo stesso errore per 6h
         raise
+    finally:
+        disarm_budget()
 
     side, conf = _RATING.get(str(rating).strip().lower(), ("flat", 0.0))
     # ponytail: leva fornita alla frontiera - il prompt upstream esclude la
@@ -153,9 +170,9 @@ def run_pipeline(cfg, coin: str, blob: str | None = None, *,
     smoke gate della migrazione non e' verde."""
     try:
         return run_upstream(cfg, coin, micro=micro)
-    except BudgetAborted:
-        raise  # T41: budget esaurito, non errore dati: il fallback
-               # raddoppierebbe la spesa LLM del grafo gia' sforato
+    except (BudgetAborted, OpenAIError):
+        raise  # T41+T42: budget esaurito o provider giu', non errore dati:
+               # il fallback custom raddoppierebbe la spesa LLM del grafo
     except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
         from .loop import log
         log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")

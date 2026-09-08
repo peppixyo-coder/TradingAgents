@@ -22,6 +22,7 @@ import sys
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from openai import OpenAIError  # T42: skip senza cooldown se il provider e' giu'
 
 from . import analysts, pipelines, registry, risk, scanner, screener, signal, store
 from .config import load
@@ -756,10 +757,11 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     futs = {}
 
     def _run_one(r, pre):
-        # T41: il budget si arma nel thread worker, NON dentro
-        # run_upstream: copre sia g.propagate che il fallback custom.
-        # Scaduto, invoke() alza BudgetAborted alla prossima chiamata
-        # LLM: lo zombie non tiene piu' il semaforo T34 per ore.
+        # T41: il budget per-asset si arma nel thread worker e copre tutto
+        # run_cycle (rete di sicurezza); run_upstream arma T42 il budget
+        # upstream, piu' stretto, attorno al solo g.propagate. Scaduto,
+        # invoke() alza BudgetAborted alla prossima chiamata LLM: lo
+        # zombie non tiene piu' il semaforo T34 per ore.
         llm.arm_budget(r["coin"], GRAPH_TIMEOUT_S)
         try:
             return run_cycle(cfg, c, ex, r["coin"], pre=pre)
@@ -801,6 +803,12 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         r = futs[fut]
         try:
             res = fut.result()
+        except (llm.BudgetAborted, OpenAIError) as e:
+            # T42: budget sforato o provider giu': NON e' una coin rotta ->
+            # niente cooldown 1h, si riprova al prossimo ciclo di scansione.
+            log(f"[cycle] SKIP {r['coin']}: {e!r} - riprova al prossimo ciclo")
+            _log_cycle(stage="skip", coin=r["coin"], error=repr(e))
+            continue
         except Exception as e:  # ponytail: una coin senza dati (es.
             tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
             log(f"[cycle] ERRORE {r['coin']}: {e!r} - continuo | {tb}")

@@ -27,6 +27,7 @@ from . import analysts, pipelines, registry, risk, scanner, screener, signal, st
 from .config import load
 from .data import HyPaperClient, collect_trades_multi, fng, rss_headlines
 from .executor import HyperliquidExecutor
+from ..llm_clients import openai_client as llm
 
 
 WHALE_MIN_USD = 10_000     # print taker minimo ($): sotto, rumore nel prompt PM
@@ -753,10 +754,22 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     # T33: staggered start - i grafi partono scaglionati: il burst di
     # chiamate LLM al primo agente dei grafi e' la fonte principale di 429.
     futs = {}
+
+    def _run_one(r, pre):
+        # T41: il budget si arma nel thread worker, NON dentro
+        # run_upstream: copre sia g.propagate che il fallback custom.
+        # Scaduto, invoke() alza BudgetAborted alla prossima chiamata
+        # LLM: lo zombie non tiene piu' il semaforo T34 per ore.
+        llm.arm_budget(r["coin"], GRAPH_TIMEOUT_S)
+        try:
+            return run_cycle(cfg, c, ex, r["coin"], pre=pre)
+        finally:
+            llm.disarm_budget()
+
     for i, (r, pre) in enumerate(jobs):
         if i:
             time.sleep(GRAPH_STAGGER_S)
-        futs[pool.submit(run_cycle, cfg, c, ex, r["coin"], pre=pre)] = r
+        futs[pool.submit(_run_one, r, pre)] = r
         log(f"[loop] graph {i + 1}/{len(jobs)} {r['coin']} start "
             f"(offset {i * GRAPH_STAGGER_S:.0f}s)")
     # wait() ha un budget TOTALE: con workers<len(jobs) (es. seriale) un solo
@@ -770,7 +783,20 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     log(f"[loop] grafi: {len(jobs)} job, {workers} worker, budget {budget:.0f}s "
         f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves}, "
         f"stagger {GRAPH_STAGGER_S:.0f}s)")
-    done_set, not_done = wait(futs, timeout=budget)
+    # T41: wait a step brevi + sweep: gli zombie (budget per-grafo scaduto,
+    # chiamata LLM in volo) vengono loggati una volta per ciclo; l'abort
+    # cooperativo li fermere' alla prossima invoke senza il semaforo.
+    done_set, not_done = set(), set(futs)
+    deadline = time.monotonic() + budget
+    warned = set()
+    while not_done and (rem := deadline - time.monotonic()) > 0:
+        finiti, not_done = wait(not_done, timeout=min(30, rem))
+        done_set |= finiti
+        for ident, (oltre, label) in llm.sweep_armed_budgets().items():
+            if ident not in warned:  # zombie vivo oltre budget: 1 log/ciclo
+                warned.add(ident)
+                log(f"[loop] zombie LLM: {label} in ritardo {oltre:.0f}s "
+                    f"oltre il budget per-grafo (abort alla prossima chiamata)")
     for fut in done_set:
         r = futs[fut]
         try:

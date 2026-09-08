@@ -12,6 +12,7 @@ import os
 import threading
 
 from . import analysts
+from ..llm_clients.openai_client import BudgetAborted
 
 # rating PM upstream -> contratto HL (conviction resta meccanico a valle)
 _RATING = {"buy": ("long", 0.7), "overweight": ("long", 0.6),
@@ -118,6 +119,8 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
     t0 = dt.datetime.now()
     try:
         final_state, rating = g.propagate(_yf_ticker(coin), t0.strftime("%Y-%m-%d"))
+    except BudgetAborted:
+        raise  # T41: budget, non ticker rotto: NON avvelenare la cache yf (6h)
     except Exception as e:
         yf_ticker_failed(coin)  # ticket C: non ripetere lo stesso errore per 6h
         raise
@@ -150,6 +153,9 @@ def run_pipeline(cfg, coin: str, blob: str | None = None, *,
     smoke gate della migrazione non e' verde."""
     try:
         return run_upstream(cfg, coin, micro=micro)
+    except BudgetAborted:
+        raise  # T41: budget esaurito, non errore dati: il fallback
+               # raddoppierebbe la spesa LLM del grafo gia' sforato
     except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
         from .loop import log
         log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")

@@ -29,6 +29,39 @@ _THROTTLE_LOCK = threading.Lock()
 _LAST_CALL = 0.0
 _SEMAPHORE = threading.Semaphore(max(1, _MAX_INFLIGHT))
 
+# T41: budget per-grafo, abort cooperativo. Il thread worker arma il
+# proprio budget (loop._run_one) prima di run_cycle; invoke() oltre la
+# scadenza rifiuta la chiamata invece di tenere il semaforo T34 per ore
+# (i thread Python non sono killabili: l'abort avviene alla prossima
+# invoke, PRIMA di toccare il semaforo). Key: ident -> (thread, deadline).
+_ARMED: dict = {}
+
+
+class BudgetAborted(RuntimeError):
+    """Il grafo in questo thread ha superato il budget: abort cooperativo."""
+
+
+def arm_budget(label, seconds):
+    _ARMED[threading.get_ident()] = (threading.current_thread(),
+                                     time.monotonic() + seconds, label)
+
+
+def disarm_budget():
+    _ARMED.pop(threading.get_ident(), None)
+
+
+def sweep_armed_budgets():
+    """{ident: (ritardo_s, label)} per budget scaduti su thread vivi;
+    purga le entry dei thread morti (grafi zombie chiusi senza disarm)."""
+    now = time.monotonic()
+    out = {}
+    for ident, (t, dl, lab) in list(_ARMED.items()):
+        if not t.is_alive():
+            del _ARMED[ident]
+        elif now > dl:
+            out[ident] = (now - dl, lab)
+    return out
+
 
 class NormalizedChatOpenAI(ChatOpenAI):
     """ChatOpenAI with normalized content output and capability-aware binding.
@@ -50,6 +83,9 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         global _LAST_CALL
+        e = _ARMED.get(threading.get_ident())  # T41: zombie oltre budget
+        if e and time.monotonic() > e[1]:
+            raise BudgetAborted(f"budget {e[2]} esaurito: nessuna nuova chiamata")
         if _MAX_INFLIGHT <= 0:  # throttle disattivato
             return normalize_content(super().invoke(input, config, **kwargs))
         with _SEMAPHORE:

@@ -194,3 +194,32 @@ def test_provider_error_skip_niente_fallback_n_e_yf(monkeypatch):
         pipelines.run_pipeline(None, "BTC", micro={})
     assert calls == []  # nessun fallback custom
     assert pipelines._YF_ERR_CACHE == {}  # cache intatta
+
+
+def test_error_body_200_promosso_openai_error(monkeypatch):
+    """T43: 9router incapsula un 502 upstream (es. Nvidia) in un body
+    200 {"error": {...}} -> langchain alza ValueError puro che
+    bypassava lo skip T42. invoke() lo promuove a OpenAIError."""
+    def probe(self, input, config=None, **kwargs):
+        raise ValueError({"message": "Upstream error from Nvidia: "
+                          "Service temporarily overloaded", "code": 502})
+
+    _patch(monkeypatch, probe)
+    llm = _llm()
+    with pytest.raises(OpenAIError) as ei:
+        llm.invoke("x")
+    assert "Nvidia" in str(ei.value)
+
+
+def test_valueerror_puro_passa_invariato(monkeypatch):
+    """T43: solo i ValueError a forma di body provider vengono promossi;
+    un ValueError puro (non dict) non viene toccato."""
+    def probe(self, input, config=None, **kwargs):
+        raise ValueError("messaggio d'ambiente non dict")
+
+    _patch(monkeypatch, probe)
+    llm = _llm()
+    with pytest.raises(ValueError) as ei:
+        llm.invoke("x")
+    assert not isinstance(ei.value, OpenAIError)
+    assert "messaggio d'ambiente" in str(ei.value)

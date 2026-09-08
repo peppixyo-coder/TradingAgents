@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
+from openai import OpenAIError  # T43: body 200 {"error": ...} promosso a errore provider
 
 from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
@@ -95,6 +96,23 @@ class NormalizedChatOpenAI(ChatOpenAI):
     stays small.
     """
 
+    def _invoke_raw(self, input, config, **kwargs):
+        # T43: 9router incapsula gli errori upstream (es. 502 Nvidia) in
+        # un body 200 {"error": {...}} -> langchain alza ValueError PURO
+        # (chat_models/base.py: _create_chat_result), che bypassava lo
+        # skip T42 (except OpenAIError): finiva nel ramo errore-dati con
+        # cooldown 1h + veleno yf + fallback custom. Lo promuovo a
+        # errore provider: stesso trattamento di 502/429 espliciti.
+        try:
+            return super().invoke(input, config, **kwargs)
+        except ValueError as e:
+            d = e.args[0] if e.args else None
+            if isinstance(d, dict) and ("message" in d or "code" in d):
+                raise OpenAIError(
+                    f"9router error body: {d.get('message', '')} "
+                    f"(code {d.get('code', '?')})") from e
+            raise
+
     def invoke(self, input, config=None, **kwargs):
         global _LAST_CALL
         e = _ARMED.get(threading.get_ident())  # T41: zombie oltre budget
@@ -104,7 +122,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
                 raise BudgetAborted(f"budget {lab} esaurito: "
                                     "nessuna nuova chiamata")
         if _MAX_INFLIGHT <= 0:  # throttle disattivato
-            return normalize_content(super().invoke(input, config, **kwargs))
+            return normalize_content(self._invoke_raw(input, config, **kwargs))
         with _SEMAPHORE:
             try:
                 if _CALL_DELAY_S > 0:
@@ -112,7 +130,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
                         wait = _LAST_CALL + _CALL_DELAY_S - time.monotonic()
                         if wait > 0:
                             time.sleep(wait)
-                return normalize_content(super().invoke(input, config, **kwargs))
+                return normalize_content(self._invoke_raw(input, config, **kwargs))
             finally:
                 # il semaforo esce solo a chiamata finita: il prossimo
                 # worker parte a fine chiamata + delay (non a start + delay)

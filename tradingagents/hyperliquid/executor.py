@@ -42,11 +42,11 @@ def _fmt_sz(q, sz_decimals):
 
 
 TP_FRACS = (0.40, 0.30, 0.30)   # TP1 conservativo, TP2 corpo, TP3 coda destra
-TP_MULTS = (1.5, 3.0, 5.0)      # distanze in ATR dall'entry
+TP_MULTS = (2.5, 4.0, 6.0)      # T44 wide: 1.5 ATR era DENTRO lo stop (2 ATR)
 
 
 def tp_levels(side, entry_px, atr):
-    """Prezzi TP1/TP2/TP3: 1.5/3/5 ATR nella direzione del profitto."""
+    """Prezzi TP1/TP2/TP3: 2.5/4/6 ATR nella direzione del profitto."""
     sgn = 1 if side == "long" else -1
     return [round(entry_px + sgn * m * atr, 6) for m in TP_MULTS]
 

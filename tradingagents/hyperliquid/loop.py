@@ -601,6 +601,15 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     lev_choice = g["decision"].get("leverage")
     if isinstance(lev_choice, bool) or not isinstance(lev_choice, (int, float)):
         return done(False, "NO_LEVERAGE: il PM non ha scelto la leva", gextra)
+    # T44: solo ingressi con confidenza PM sufficiente (low-conviction =
+    # fee drag). Il path reversal ha gia' il suo gate (REVERSAL_CONF_MIN).
+    try:
+        conf_pm = float(g["decision"].get("confidence") or 0)
+    except (TypeError, ValueError):
+        conf_pm = 0.0
+    if conf_pm < cfg.min_trade_confidence:
+        return done(False, f"PM conf {conf_pm:.2f} < {cfg.min_trade_confidence}",
+                    gextra)
 
     # ---- rischio ----
     vetoes = risk.check_dd_veto(cfg, eq)

@@ -26,9 +26,10 @@ class HLConfig:
     lev_cap: float = 3.0               # leva totale max
     daily_dd: float = -0.05            # DD giornaliero -> hard-veto nuovi ingressi
     weekly_dd: float = -0.10           # DD settimanale -> stop 24h (loop concern)
-    min_notional: float = 10.0         # sotto: skip trade, mai forzato
+    min_notional: float = 3000.0      # T44: sotto -> skip, fee relative troppe alte
     atr_stop_mult: float = 2.0         # distanza stop = 2 x ATR(14, 1h)
     signal_z_min: float = 1.0          # soglia entrata |OFI_z|
+    min_trade_confidence: float = 0.65  # T44: confidenza PM minima per un ingresso
 
 
 def load() -> HLConfig:
@@ -51,4 +52,6 @@ def load() -> HLConfig:
         wallet=os.getenv("HYPAPER_WALLET", "spike-agent-01"),
         paper_seed_balance=float(os.getenv("PAPER_SEED_BALANCE", "10000")),
         ws_collect_seconds=int(os.getenv("HL_WS_COLLECT_SECONDS", "90")),
+        min_notional=float(os.getenv("MIN_NOTIONAL_USD", "3000")),
+        min_trade_confidence=float(os.getenv("MIN_TRADE_CONFIDENCE", "0.65")),
     )

@@ -9,6 +9,7 @@ Il RiskManager la clippa solo al massimo consentito dall'exchange per l'asset
 e valuta la leva TOTALE del portfolio come advisory con riduzione di size.
 """
 from . import store
+from .executor import TP_MULTS   # T44: fonte unica del primo take-profit
 import time
 
 
@@ -47,6 +48,11 @@ def size_order(cfg, balance, mid, sigma, atr, conviction,
 
     qty = round(notional / mid, 5) if mid > 0 else 0.0
     stop_dist = cfg.atr_stop_mult * atr if atr and atr > 0 else mid * 0.02
+    # T44: il primo TP deve stare OLTRE lo stop (R:R primario > 1), se no le
+    # fee mangiano il margine: TP1 dentro lo stop -> veto.
+    if atr and atr > 0 and TP_MULTS[0] * atr <= stop_dist:
+        vetoes.append(f"TP1_INSIDE_STOP (TP1 {TP_MULTS[0]}ATR <= stop "
+                      f"{cfg.atr_stop_mult}ATR)")
     # Leva del PM: nessun default nel codice; se manca -> veto (skip ciclo).
     if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or float(leverage) < 1:
         vetoes.append("LEVERAGE_MISSING (il PM non ha scelto la leva)")

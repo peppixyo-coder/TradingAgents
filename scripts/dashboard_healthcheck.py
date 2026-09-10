@@ -80,7 +80,11 @@ def check_rest(checks):
 
 async def _collect_ws(frames, want_s):
     import websockets
-    async with websockets.connect(WS_URL, open_timeout=10) as ws:
+    # ponytail: max_size=None perche' il frame metrics cresce con lo storico
+    # (trades+agents: 1.27MB a 136 trade). I browser non hanno il limite 1MiB
+    # di default di websockets: il probe non deve imporre un vincolo che il
+    # prodotto non ha. Se il frame supera ~5MB, trimmerare il payload invece.
+    async with websockets.connect(WS_URL, open_timeout=10, max_size=None) as ws:
         while sum(1 for f in frames if f.get("t") == "metrics") < 1 \
                 and len(frames) < 50:
             raw = await asyncio.wait_for(ws.recv(), timeout=want_s)

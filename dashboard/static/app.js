@@ -158,7 +158,8 @@ function drawEquity() {
 
 /* P&L per trade: barre + linea cumulata (Apex combo) */
 function drawDistOv() {
-  const cl = S.trades.filter(t => t.status === "closed");
+  // ponytail: pnl null = chiusura senza prezzo calcolabile (server.py:465) o admin; il server li esclude dai KPI (L261), qui idem
+  const cl = S.trades.filter(t => t.status === "closed" && t.pnl != null);
   if (!cl.length) return emptyChart("ov-dist");
   let cum = 0;
   const cats = cl.map((t, i) => `T${i + 1}`);
@@ -281,12 +282,14 @@ function renderTrades() {
   const rows = filteredTrades();
   const closed = rows.filter(t => t.status === "closed");
   const tot = closed.reduce((a, t) => a + t.pnl, 0);
-  const wins = closed.filter(t => t.pnl > 0).length;
+  // ponytail: win-rate sui soli trade con pnl noto (come i KPI server, server.py:261); tot resta su tutti (pnl null = 0)
+  const rated = closed.filter(t => t.pnl != null);
+  const wins = rated.filter(t => t.pnl > 0).length;
   const adm = closed.filter(t => t.adm).length;
   $("#t-sum").innerHTML =
     `<span>${rows.length} trade</span><span>chiusi <b>${closed.length}</b>${adm ? ` (${adm} adm)` : ""}</span>` +
     `<span>P&L <b class="${cls(tot)}">${usd(tot)}</b></span>` +
-    `<span>win <b>${closed.length ? Math.round(wins / closed.length * 100) : 0}%</b></span>`;
+    `<span>win <b>${rated.length ? Math.round(wins / rated.length * 100) : 0}%</b></span>`;
   $("#tbl-trades tbody").innerHTML = rows.map(t => `
     <tr class="click${t.adm ? " adm" : ""}" data-id="${t.id}">
       <td>${t.id}</td><td>${t.tsOpen}</td><td>${t.coin}</td>

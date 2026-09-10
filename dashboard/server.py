@@ -94,8 +94,8 @@ class Agg:
         self.ctxs_cache = ([], 0.0)      # (universe, ts)
         self._pos_ch = None              # ponytail: cache clearinghouseState
         self._pos_t = 0.0                #   (HyPaper /info ha rate limit; senza,
-        self._eq_v = None                #   fast_loop+slow_loop fanno ~80 req/min
-        self._eq_t = 0.0                 #   e prendono 429 a raffica)
+        self._eq_v = self.equity[-1][1] if self.equity else None  # T48: seed da disco,
+        self._eq_t = 0.0                #   cold-start non alza se HyPaper giu'
         self._xp = {}                    # (coin, ts_s) -> close px, candele storiche
         self.clients = set()
 
@@ -244,8 +244,17 @@ class Agg:
         return uni
 
     def equity_cached(self, ttl=30):
+        # T48: HyPaper flakky (syncDex) -> servirlo stantio invece di
+        # perdere il frame metrics / 500are /api/snapshot. Mai provare piu'
+        # spesso di ttl, anche in fail.
         if self._eq_v is None or time.time() - self._eq_t > ttl:
-            self._eq_v = equity(self.c, self.cfg)
+            try:
+                self._eq_v = equity(self.c, self.cfg)
+            except Exception as e:
+                if self._eq_v is None:
+                    raise  # mai avuto un valore: non inventarlo
+                print(f"[equity] {type(e).__name__}, servo l'ultimo valore: {e}",
+                      flush=True)
             self._eq_t = time.time()
         return self._eq_v
 
@@ -585,7 +594,7 @@ async def health():
 
 
 @app.get("/api/snapshot")
-async def api_snapshot():
+def api_snapshot():
     agg.load_cycles()
     agg.backfill_equity()
     trades = agg.build_trades()
@@ -598,19 +607,19 @@ async def api_snapshot():
 
 
 @app.get("/api/trades")
-async def api_trades():
+def api_trades():
     agg.load_cycles()
     return agg.build_trades()
 
 
 @app.get("/api/report")
-async def api_report():
+def api_report():
     from tradingagents.hyperliquid.monitor import build_report
     return Response(build_report(), media_type="text/markdown")
 
 
 @app.get("/api/candles/{coin}")
-async def api_candles(coin: str, interval: str = "1h", hours: int = 48):
+def api_candles(coin: str, interval: str = "1h", hours: int = 48):
     try:
         return agg.c.candles(coin, interval, hours * 3600 * 1000)
     except Exception as e:
@@ -618,7 +627,7 @@ async def api_candles(coin: str, interval: str = "1h", hours: int = 48):
 
 
 @app.get("/api/l2book/{coin}")
-async def api_l2book(coin: str):
+def api_l2book(coin: str):
     try:
         return agg.rest({"type": "l2Book", "coin": coin})
     except Exception as e:
@@ -626,7 +635,7 @@ async def api_l2book(coin: str):
 
 
 @app.get("/api/funding/{coin}")
-async def api_funding(coin: str):
+def api_funding(coin: str):
     try:
         return agg.rest({"type": "fundingHistory", "coin": coin,
                          "startTime": int((time.time() - 7 * 86400) * 1000),

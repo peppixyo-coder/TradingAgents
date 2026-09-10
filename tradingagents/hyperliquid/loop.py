@@ -770,7 +770,7 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         # run_cycle (rete di sicurezza); run_upstream arma T42 il budget
         # upstream, piu' stretto, attorno al solo g.propagate. Scaduto,
         # invoke() alza BudgetAborted alla prossima chiamata LLM: lo
-        # zombie non tiene piu' il semaforo T34 per ore.
+        # zombie non resta in volo per ore.
         llm.arm_budget(r["coin"], GRAPH_TIMEOUT_S)
         try:
             return run_cycle(cfg, c, ex, r["coin"], pre=pre)
@@ -796,7 +796,7 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         f"stagger {GRAPH_STAGGER_S:.0f}s)")
     # T41: wait a step brevi + sweep: gli zombie (budget per-grafo scaduto,
     # chiamata LLM in volo) vengono loggati una volta per ciclo; l'abort
-    # cooperativo li fermere' alla prossima invoke senza il semaforo.
+    # cooperativo li fermere' alla prossima invoke.
     done_set, not_done = set(), set(futs)
     deadline = time.monotonic() + budget
     warned = set()

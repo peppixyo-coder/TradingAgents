@@ -15,26 +15,21 @@ from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
 
-# Semaforo LLM (T34): max N chiamate in volo verso 9router per TUTTO il
-# bot (default 1). I 3 worker dei grafi competono sullo stesso semaforo:
-# round-robin naturale, il pool Combo-2 non satura, 9router resta sul
-# modello veloce senza fallback su modelli lenti. Il semaforo tiene la
-# chiamata DENTRO — il difetto T33: la lock copriva solo lo spazio tra
-# gli start, lasciando 3 chiamate in volo insieme — e ogni uscita lascia
-# passare il prossimo. _CALL_DELAY_S è il gap obbligato tra la FINE di
-# una chiamata e lo start della successiva (anti-burst).
-# _MAX_INFLIGHT <= 0 disattiva throttle e semaforo.
+# Delay LLM per-worker (T50): il semaforo condiviso T34 (max 1 in volo,
+# non-FIFO) e' ritirato - il primo grafo monopolizzava lo slot e gli
+# altri abortivano per starvation di budget, non per lentezza propria
+# (T49). Ogni thread worker si regola da solo: _CALL_DELAY_S e' il gap
+# obbligato tra la FINE di una chiamata e lo start della successiva,
+# per worker (threading.local: niente lock, il worker e' single-thread,
+# worker diversi mai in coda tra loro). <= 0 disattiva il delay.
 _CALL_DELAY_S = float(os.getenv("TRADINGAGENTS_LLM_CALL_DELAY_S", "0"))
-_MAX_INFLIGHT = int(os.getenv("TRADINGAGENTS_LLM_MAX_INFLIGHT", "1"))
-_THROTTLE_LOCK = threading.Lock()
-_LAST_CALL = 0.0
-_SEMAPHORE = threading.Semaphore(max(1, _MAX_INFLIGHT))
+_PER_WORKER = threading.local()
 
 # T41: budget per-grafo, abort cooperativo. Il thread worker arma il
 # proprio budget (loop._run_one) prima di run_cycle; invoke() oltre la
-# scadenza rifiuta la chiamata invece di tenere il semaforo T34 per ore
+# scadenza rifiuta la chiamata invece di restare in volo per ore
 # (i thread Python non sono killabili: l'abort avviene alla prossima
-# invoke, PRIMA di toccare il semaforo).
+# invoke).
 # T42: budget a PILA per finestre annidate - il worker arma il per-asset
 # (rete di sicurezza su tutto run_cycle), run_upstream arma quello
 # upstream, piu' stretto, solo attorno a g.propagate. La scadenza
@@ -114,29 +109,25 @@ class NormalizedChatOpenAI(ChatOpenAI):
             raise
 
     def invoke(self, input, config=None, **kwargs):
-        global _LAST_CALL
         e = _ARMED.get(threading.get_ident())  # T41: zombie oltre budget
         if e:
             dl, lab = min(e[1])  # T42: vince la scadenza piu' stretta
             if time.monotonic() > dl:
                 raise BudgetAborted(f"budget {lab} esaurito: "
                                     "nessuna nuova chiamata")
-        if _MAX_INFLIGHT <= 0:  # throttle disattivato
+        # T50: delay per-worker - il gap FINE->start della prossima chiamata
+        # e' solo di questo thread; i grafi non si mettono in coda tra loro
+        # (la concorrenza reale resta al gate del router).
+        if _CALL_DELAY_S <= 0:
             return normalize_content(self._invoke_raw(input, config, **kwargs))
-        with _SEMAPHORE:
-            try:
-                if _CALL_DELAY_S > 0:
-                    with _THROTTLE_LOCK:
-                        wait = _LAST_CALL + _CALL_DELAY_S - time.monotonic()
-                        if wait > 0:
-                            time.sleep(wait)
-                return normalize_content(self._invoke_raw(input, config, **kwargs))
-            finally:
-                # il semaforo esce solo a chiamata finita: il prossimo
-                # worker parte a fine chiamata + delay (non a start + delay)
-                if _CALL_DELAY_S > 0:
-                    with _THROTTLE_LOCK:
-                        _LAST_CALL = time.monotonic()
+        wait = getattr(_PER_WORKER, "last_end", 0.0) + _CALL_DELAY_S \
+            - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return normalize_content(self._invoke_raw(input, config, **kwargs))
+        finally:
+            _PER_WORKER.last_end = time.monotonic()
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

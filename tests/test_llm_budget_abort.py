@@ -1,10 +1,10 @@
-"""T41+T42: abort cooperativo budget grafi + budget a due livelli.
+"""T41+T42+T50: abort cooperativo budget grafi + budget a due livelli.
 
-Zero rete: ChatOpenAI.invoke e' monkeypatchato con probe, pattern del
-test T34. T41: un grafo oltre il budget teneva il semaforo T34 per
-ore; invoke() rifiuta ora PRIMA del semaforo. T42: _ARMED e' una PILA
-(per-asset del worker + upstream piu' stretto): vince la scadenza
-piu' vicina; l'errore provider NON avvelena la cache yf (no, dati ok).
+Zero rete: ChatOpenAI.invoke e' monkeypatchato con probe. T41: un grafo
+oltre il budget restava in volo per ore; invoke() rifiuta ora PRIMA del
+delay per-worker. T42: _ARMED e' una PILA (per-asset del worker +
+upstream piu' stretto): vince la scadenza piu' vicina; l'errore
+provider NON avvelena la cache yf (no, dati ok).
 """
 import threading
 import time
@@ -24,10 +24,8 @@ def _llm():
 
 def _patch(monkeypatch, probe):
     monkeypatch.setattr(ChatOpenAI, "invoke", probe)
-    monkeypatch.setattr(O, "_MAX_INFLIGHT", 1)
-    monkeypatch.setattr(O, "_SEMAPHORE", threading.Semaphore(1))
     monkeypatch.setattr(O, "_CALL_DELAY_S", 0.0)
-    monkeypatch.setattr(O, "_LAST_CALL", 0.0)
+    monkeypatch.setattr(O, "_PER_WORKER", threading.local())
     monkeypatch.setattr(O, "_ARMED", {})
 
 
@@ -45,25 +43,30 @@ def test_invoke_rifiuta_oltre_budget(monkeypatch):
         O.disarm_budget()
 
 
-def test_abort_prima_del_semaforo(monkeypatch):
+def test_abort_prima_del_delay_di_thread_altro(monkeypatch):
+    """Il budget e' per-thread: un worker scaduto non aspetta i delay
+    altrui ne' blocca gli altri (T50: semaforo ritirato)."""
     def probe(self, input, config=None, **kwargs):
         pytest.fail("invoke non deve partire")
 
+
     _patch(monkeypatch, probe)
-    assert O._SEMAPHORE.acquire(blocking=False)  # semaforo occupato
+    altro = threading.local()  # worker "altro" a fine chiamata da 60s
+    altro.last_end = time.monotonic() + 60
+    monkeypatch.setattr(O, "_PER_WORKER", altro)
     llm = _llm()
     O.arm_budget("TEST", -1)
     try:
         t0 = time.monotonic()
         with pytest.raises(O.BudgetAborted):
-            llm.invoke("x")  # bloccherebbe se aspettasse il semaforo
+            llm.invoke("x")  # bloccherebbe se aspettasse il delay altro
         assert time.monotonic() - t0 < 1
     finally:
         O.disarm_budget()
-        O._SEMAPHORE.release()
 
 
 def test_disarm_ripristina_invoke_e_sweep_vuoto(monkeypatch):
+
     def probe(self, input, config=None, **kwargs):
         return types.SimpleNamespace(content="ok")
 

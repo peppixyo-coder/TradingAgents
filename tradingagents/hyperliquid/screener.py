@@ -17,7 +17,7 @@ STABLES = {"USDT", "USDC", "FDUSD", "USDH", "USDE", "USDT0", "PYUSD", "DAI",
            "FRAX", "USDS", "TUSD", "USD1", "EURC", "EURI", "USDX"}
 # Private/unlisted equities without Yahoo coverage: gli analyst non hanno
 # dati reali e fabbricherebbero. Fuori dall'universo tradabile.
-EXCLUDE_BASES = {"ZHIPU", "CXMT"}
+EXCLUDE_BASES = {"ZHIPU", "CXMT", "MINIMAX"}
 
 
 def is_stable(name, mid):

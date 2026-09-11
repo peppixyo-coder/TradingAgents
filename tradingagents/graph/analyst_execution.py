@@ -29,7 +29,7 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         # Wire key stays "social" for saved-config back-compat; the
         # user-facing label is "Sentiment Analyst" to match the rename
         # that landed in v0.2.5 (sentiment_analyst now ingests news +
-        # StockTwits + Reddit, not just social media).
+        # StockTwits, not just social media).
         key="social",
         agent_node="Sentiment Analyst",
         clear_node="Msg Clear Sentiment",

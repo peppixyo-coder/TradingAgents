@@ -45,6 +45,9 @@ _ORDER_LOCK = threading.Lock()
 MAX_GRAPH_WORKERS = int(os.getenv("HL_MAX_GRAPH_WORKERS", "3"))  # grafi paralleli
 GRAPH_TIMEOUT_S = int(os.getenv("PER_ASSET_GRAPH_TIMEOUT_S")     # hard timeout grafo
                       or os.getenv("HL_GRAPH_TIMEOUT_S", "1200"))  # (nome legacy)
+CYCLE_MAX_RUNTIME_S = int(os.getenv("CYCLE_MAX_RUNTIME_S", "1800"))  # tetto ciclo
+# (ordine T42: UPSTREAM 1080 < PER_ASSET 1200 < CYCLE 1800; riga cancellata
+# per errore in 85553c6 e restaurata in T50 r3)
 GRAPH_STAGGER_S = float(os.getenv("HL_GRAPH_STAGGER_S", "15"))  # T33: offset tra avvii
 # ticket A: dopo un errore/timeout di grafo la coin va in cooldown -
 # non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).

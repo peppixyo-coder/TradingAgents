@@ -167,10 +167,14 @@ class Agg:
     def backfill_equity(self):
         pts = sorted((_parse_ts(r["ts"]), float(r["equity"]))
                      for r in self.cycles if r.get("equity") and _parse_ts(r["ts"]))
-        have = {t for t, _ in self.equity}
-        for t, v in pts:
-            if t not in have:
-                self.equity.append((t, v))
+        if not pts:
+            return
+        # i punti dei cicli sono piu' vecchi della coda live (equity.jsonl +
+        # slow_loop): appenderli in coda mandava la serie fuori ordine e
+        # spezzava drawEquity (T47) e il seed equity_cached (T48).
+        merged = sorted(set(self.equity) | set(pts))
+        self.equity.clear()
+        self.equity.extend(merged)
 
     def positions_live(self):
         # ponytail: sotto rate-limit serve l'ultimo snapshot buono (max 5 min

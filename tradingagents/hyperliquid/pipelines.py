@@ -102,7 +102,7 @@ def _graph(asset_class: str, exec_ctx: str, coin: str):
 # T42: budget del solo grafo upstream (fase LLM-pesante del ciclo), piu'
 # stretto del per-asset del worker (PER_ASSET_GRAPH_TIMEOUT_S in loop):
 # scaduto, invoke() alza BudgetAborted alla prossima chiamata LLM.
-UPSTREAM_TIMEOUT_S = int(os.getenv("UPSTREAM_GRAPH_TIMEOUT_S", "480"))
+UPSTREAM_TIMEOUT_S = int(os.getenv("UPSTREAM_GRAPH_TIMEOUT_S", "1080"))
 
 
 def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:

@@ -38,4 +38,16 @@ Frame metrics ~300 KB (≈75% meno), xrow/select stabili tra refresh 5s,
 overview "Ultimo ciclo" finalmente valorizzata.
 
 ## Esito
-(in corso)
+R1 (commit precedente): frame 1.27MB → 460KB (panel/debate out). Verifica reale
+WS però mostrava ancora 460KB vs target ~300KB: `rationale` (~190KB: 136KB in
+143 trades + 53KB in 40 recent) era rimasto nel frame.
+
+R2 (commit a3adfcb): `_HEAVY = (panel, debate, rationale)`; lastCycle tiene
+solo rationale (card overview), panel/debate out. xrow e scan select prendono
+rationale dal detail on-demand (fetchTradeDetail/fetchScanDetail lo popolano
+in `td-rationale-{id}` / `ag-rationale`).
+
+**Verificato:** frame WS 262KB (da 1.27MB = −79%), tick 74KB invariato.
+Test T53 3/3, regressione dashboard 5/5. Container ricostruito, healthy.
+Browser: xrow 144 rationale+panel via detail, select scan persistente con
+rationale, lastCycle card valorizzata.

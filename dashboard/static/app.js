@@ -3,8 +3,9 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
-            agents: {}, cfg: {}, conn: {}, logs: [], scans: [], tab: "overview",
-            apCoin: null, charts: {}, eqTf: "all", events: [] };
+ agents: {}, cfg: {}, conn: {}, logs: [], scans: [], tab: "overview",
+ apCoin: null, charts: {}, eqTf: "all", events: [],
+ tDetail: {}, tPending: new Set(), scanDetail: {}, scanPending: new Set() }; // T53: detail cache on-demand
 
 /* ---------- formatters ---------- */
 const usd = v => { if (v == null || isNaN(v)) return "—";
@@ -279,7 +280,12 @@ function filteredTrades() {
     (!fc || t.coin.startsWith(fc)));
 }
 function renderTrades() {
+  // T53: sig-skip rebuild se trades invariati (fix: xrow aperta collassa ogni 5s).
+  // Sig su id:status:exit:tps (pnl aperti null = stabili tra frame).
   const rows = filteredTrades();
+  const sig = rows.map(t => `${t.id}:${t.status}:${t.exit}:${(t.tpsHitList || []).join("")}`).join("|");
+  if (sig === S._trSig) return;
+  S._trSig = sig;
   const closed = rows.filter(t => t.status === "closed");
   const tot = closed.reduce((a, t) => a + t.pnl, 0);
   // ponytail: win-rate sui soli trade con pnl noto (come i KPI server, server.py:261); tot resta su tutti (pnl null = 0)
@@ -301,15 +307,22 @@ function renderTrades() {
       <td>${dur(t.durS)}</td><td class="sans">${esc(t.closeKind || t.closeReason || t.status)}</td>
       <td class="hint">▾</td></tr>`).join("") ||
     `<tr><td colspan="13" class="empty">nessun trade.</td></tr>`;
+  // T53: rebuild reale -> riapre l'xrow lasciata aperta (detail da cache)
+  if (S._openTrade != null) {
+    const tr = $(`#tbl-trades tr[data-id="${S._openTrade}"]`);
+    tr ? toggleTradeRow(tr) : S._openTrade = null;
+  }
 }
 function toggleTradeRow(tr) {
   const id = +tr.dataset.id;
   const next = tr.nextElementSibling;
-  if (next && next.classList.contains("xrow")) { next.remove(); tr.classList.remove("sel"); return; }
+  if (next && next.classList.contains("xrow")) { next.remove(); tr.classList.remove("sel"); S._openTrade = null; return; }
   $$("#tbl-trades tr.xrow").forEach(e => e.remove());
   $$("#tbl-trades tr.sel").forEach(e => e.classList.remove("sel"));
   const t = S.trades.find(x => x.id === id); if (!t) return;
+  S._openTrade = id;
   tr.classList.add("sel");
+  const d = S.tDetail[id];  // T53: cache pesante on-demand (il frame 5s e' light)
   const tr2 = document.createElement("tr"); tr2.className = "xrow";
   tr2.innerHTML = `<td colspan="13"><div class="detail-grid">
     <div><h3 class="card-h" style="margin-top:0">Decisione</h3><div class="kv cols">${kv([
@@ -317,13 +330,28 @@ function toggleTradeRow(tr) {
       ["Fee", t.fee != null ? usd(t.fee) : "—"], ["Chiuso", t.tsClose || "aperto"],
       ["PnL da TP", t.pnlTps != null ? usd(t.pnlTps) : "—"],
       ["PnL residuo (stop)", t.pnlResidual != null ? usd(t.pnlResidual) : "—"]])}</div>
-      <div class="box" style="margin-top:8px">${esc(t.rationale || "—")}</div></div>
+      <div class="box" id="td-rationale-${id}" style="margin-top:8px">${d?.rationale != null ? esc(t.rationale ?? d.rationale) : esc(t.rationale ?? "…")}</div></div>
     <div><h3 class="card-h" style="margin-top:0">Panel</h3>
-      <div class="box">${esc(fmtText(t.panel))}</div></div>
+      <div class="box" id="td-panel-${id}">${d?.panel != null ? esc(fmtText(d.panel)) : "…"}</div></div>
     <div><h3 class="card-h" style="margin-top:0">Debate</h3>
-      <div class="box">${esc(fmtText(t.debate))}</div></div>
+      <div class="box" id="td-debate-${id}">${d?.debate != null ? esc(fmtText(d.debate)) : "…"}</div></div>
   </div></td>`;
   tr.after(tr2);
+  if (!d) fetchTradeDetail(id);
+}
+async function fetchTradeDetail(id) {
+  if (S.tDetail[id] || S.tPending.has(id)) return;  // T53: una fetch per trade
+  S.tPending.add(id);
+  try {
+    const d = await (await fetch(`/api/trade/${id}`)).json();
+    S.tDetail[id] = d;
+    const p = document.getElementById(`td-panel-${id}`), b = document.getElementById(`td-debate-${id}`),
+          ra = document.getElementById(`td-rationale-${id}`);
+    if (p) p.textContent = fmtText(d.panel);
+    if (b) b.textContent = fmtText(d.debate);
+    if (ra && d.rationale != null) ra.textContent = d.rationale;
+  } catch { /* xrow chiusa o rete: resta il placeholder "…" */ }
+  S.tPending.delete(id);
 }
 
 /* ---------- analytics ---------- */
@@ -429,22 +457,51 @@ function renderAgents() {
     ["Watchlist", (a.watchlist || []).join(", ")],
     ["Intervalli", `scan ${S.cfg.scanIntervalS}s · ws ${S.cfg.wsCollectS}s`]]);
   const sel = $("#ag-cycle-sel");
-  sel.innerHTML = S.scans.map((r, i) =>
-    `<option value="${i}">${r.ts} · ${r.coin} · ${r.executed ? "TRADE" : (r.reason || "skip")}</option>`).join("");
-  if (S.scans.length) showCycle(0);
+  // T53: rebuild solo se cambia la lista (fix: select si resettava ogni 5s).
+  // Preserva la selezione per CHIAVE: le nuove scan prependono e shifterebbero l'indice.
+  const sig = S.scans.map(r => `${r.ts}|${r.coin}|${r.executed ? 1 : 0}|${r.reason || ""}`).join(";");
+  if (sig !== S._scSig) {
+    S._scSig = sig;
+    const ki = sel.dataset.user === "1" && S._scKey
+      ? S.scans.findIndex(r => `${r.ts}|${r.coin}` === S._scKey) : -1;
+    sel.innerHTML = S.scans.map((r, i) =>
+      `<option value="${i}">${r.ts} · ${r.coin} · ${r.executed ? "TRADE" : (r.reason || "skip")}</option>`).join("");
+    sel.value = ki >= 0 ? ki : 0;
+  }
+  if (S.scans.length) showCycle(sel.selectedIndex < 0 ? 0 : sel.selectedIndex);
 }
 function showCycle(i) {
   const r = S.scans[i]; if (!r) return;
+  S._scKey = `${r.ts}|${r.coin}`;  // T53: chiave della selezione corrente
   $("#ag-decision").innerHTML = kv([
     ["Coin", r.coin], ["Segnale quant", r.ofi_z != null ? "z=" + num(r.ofi_z, 2) : "—"],
-    ["LLM side", r.llm_side || "—"], ["Conviction", r.confidence ?? "—"],
+    ["LLM side", r.llm_side || "—"], ["Conviction", r.conviction ?? "—"],
     ["Esito", r.executed ? '<b class="pos">TRADE</b>' : esc(r.reason || "—")],
     ["Latenza LLM", r.llm_ms ? r.llm_ms + " ms" : "—"],
-    ["Durata", r.dur_s ? r.dur_s + " s" : "—"]]);
+    ["Durata", r.dur_s ? r.dur_s + "s" : "—"]]);
+  const key = `${r.ts}|${r.coin}`;
+  const d = S.scanDetail[key];
   $("#ag-decision").insertAdjacentHTML("beforeend",
-    `<label>Rationale</label><b class="sans" style="white-space:normal">${esc(r.rationale || "—")}</b>`);
-  $("#ag-panel").textContent = fmtText(r.panel);
-  $("#ag-debate").textContent = fmtText(r.debate);
+    `<label>Rationale</label><b class="sans" id="ag-rationale" style="white-space:normal">${esc((d ?? r).rationale ?? "…")}</b>`);
+  $("#ag-panel").textContent = d?.panel != null ? fmtText(d.panel) : "…";
+  $("#ag-debate").textContent = d?.debate != null ? fmtText(d.debate) : "…";
+  if (!d) fetchScanDetail(key, r);
+}
+async function fetchScanDetail(key, r) {
+  if (S.scanDetail[key] || S.scanPending.has(key)) return;  // T53: una fetch per scan
+  S.scanPending.add(key);
+  try {
+    const d = await (await fetch(`/api/scan?ts=${encodeURIComponent(r.ts)}&coin=${r.coin}`)).json();
+    S.scanDetail[key] = d;
+    const cur = S.scans[$("#ag-cycle-sel").selectedIndex];
+    if (cur && `${cur.ts}|${cur.coin}` === key) {
+      $("#ag-panel").textContent = fmtText(d.panel);
+      $("#ag-debate").textContent = fmtText(d.debate);
+      const ra = document.getElementById("ag-rationale");
+      if (ra && d.rationale != null) ra.textContent = d.rationale;
+    }
+  } catch { /* selezione cambiata o rete: resta "…" */ }
+  S.scanPending.delete(key);
 }
 
 /* ---------- market ---------- */
@@ -566,7 +623,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#tbl-market").addEventListener("click", e => {
     const tr = e.target.closest("tr[data-coin]"); if (tr) openAsset(tr.dataset.coin); });
   $("#mkt-filter").oninput = renderMarket;
-  $("#ag-cycle-sel").onchange = e => showCycle(+e.target.value);
+  $("#ag-cycle-sel").onchange = e => { e.target.dataset.user = "1"; showCycle(+e.target.value); };
   $$("#eq-tf .tf").forEach(b => b.onclick = () => {
     S.eqTf = b.dataset.tf;
     $$("#eq-tf .tf").forEach(x => x.classList.toggle("on", x === b));

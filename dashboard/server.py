@@ -63,6 +63,15 @@ def _tp_view(it):
     return out
 
 
+_HEAVY = ("panel", "debate", "rationale")
+
+
+def _light(recs):
+    """T53: copie senza panel/debate/rationale per il frame metrics 5s; il
+    dettaglio resta disponibile on-demand da /api/trade/{id} e /api/scan."""
+    return [{k: v for k, v in r.items() if k not in _HEAVY} for r in recs]
+
+
 class Agg:
     """Aggregatore in-memory: unica fonte per tick e metrics."""
 
@@ -432,7 +441,12 @@ class Agg:
                 {"name": "RiskManager", "lastTs": next((r["ts"] for r in reversed(scans) if (r.get("reason") or "").startswith("veto") or r["executed"]), None)},
                 {"name": "Executor", "lastTs": next((r["ts"] for r in reversed(scans) if r["executed"]), None)},
             ],
-            "recent": scans[-40:],
+            # T53: panel/debate (multi-KB per record) fuori dal frame 5s; il
+            # dettaglio arriva on-demand da /api/trade e /api/scan.
+            "recent": _light(scans[-40:]),
+            # T53: rationale resta (card overview), panel/debate (multi-KB) no.
+            "lastCycle": ({k: v for k, v in last_scan.items()
+                           if k not in ("panel", "debate")} if last_scan else None),
         }
 
     def build_trades(self):
@@ -549,7 +563,7 @@ class Agg:
     def snapshot_slow(self):
         self.load_cycles()
         self.backfill_equity()
-        trades = self.build_trades()
+        trades = _light(self.build_trades())
         k = self.kpis(trades)
         self.last_kpis = k
         return {
@@ -613,7 +627,26 @@ def api_snapshot():
 @app.get("/api/trades")
 def api_trades():
     agg.load_cycles()
-    return agg.build_trades()
+    # T53: come il frame 5s — listato light, panel/debate da /api/trade/{id}
+    return _light(agg.build_trades())
+
+
+@app.get("/api/trade/{tid}")
+def api_trade(tid: int):
+    agg.load_cycles()
+    rec = next((t for t in agg.build_trades() if t["id"] == tid), None)
+    if not rec:
+        raise HTTPException(404, "trade inesistente")
+    return rec
+
+@app.get("/api/scan")
+def api_scan(ts: str, coin: str):
+    agg.load_cycles()
+    rec = next((r for r in reversed(agg.cycles)
+                if "stage" not in r and r.get("ts") == ts and r.get("coin") == coin), None)
+    if not rec:
+        raise HTTPException(404, "scan inesistente")
+    return rec
 
 
 @app.get("/api/report")

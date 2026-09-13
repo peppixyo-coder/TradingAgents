@@ -120,3 +120,25 @@ def test_strike_non_avvelena_cache_yf(monkeypatch):
     with pytest.raises(O.GraphAbortError):
         pipelines.run_upstream(None, "BTC")
     assert pipelines._YF_ERR_CACHE == {}
+
+
+def test_strike_niente_fallback_custom(monkeypatch):
+    """T54: LLMStrikeError dal grafo NON attiva il flusso custom
+    (stesso trattamento del provider giu' T42: niente spesa doppia)."""
+    monkeypatch.setattr(pipelines, "_YF_ERR_CACHE", {})
+    monkeypatch.setattr(pipelines, "yf_ticker_resolves", lambda coin: True)
+
+    def fake_graph(ac, ctx, coin):
+        g = types.SimpleNamespace()
+        g.propagate = lambda *a, **k: (_ for _ in ()).throw(
+            O.LLMStrikeError("model=Combo-1: timeout"))
+        return g
+
+    monkeypatch.setattr(pipelines, "_graph", fake_graph)
+
+    def no_fallback(cfg, blob):
+        pytest.fail("strike non deve attivare il fallback custom")
+
+    monkeypatch.setattr(pipelines.analysts, "run_graph", no_fallback)
+    with pytest.raises(O.LLMStrikeError):
+        pipelines.run_pipeline(None, "BTC", micro={})

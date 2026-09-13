@@ -181,9 +181,10 @@ def run_pipeline(cfg, coin: str, blob: str | None = None, *,
     smoke gate della migrazione non e' verde."""
     try:
         return run_upstream(cfg, coin, micro=micro)
-    except (BudgetAborted, OpenAIError):
-        raise  # T41+T42: budget esaurito o provider giu', non errore dati:
-               # il fallback custom raddoppierebbe la spesa LLM del grafo
+    except (BudgetAborted, GraphAbortError, LLMStrikeError, OpenAIError):
+        raise  # T41+T42+T54: budget, strike/abort o provider giu', non
+               # errore dati: il fallback custom raddoppierebbe la spesa
+               # LLM proprio quando il provider e' in difficolta'
     except Exception as e:  # ponytail: fallback esplicito finché lo smoke gate T28 è verde; rimuovere dopo la ratifica.
         from .loop import log
         log(f"[pipeline] upstream {coin} fallito ({e!r}) -> flusso custom")

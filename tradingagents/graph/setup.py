@@ -1,5 +1,8 @@
 # TradingAgents/graph/setup.py
 
+import logging
+import time
+from functools import wraps
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +28,39 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
 
+
+logger = logging.getLogger(__name__)
+
+# T54: step names spec (grep-friendly) <- LangGraph node names. Ogni nodo
+# LLM-pesante viene cronometrato: GRAPH_STEP DEBUG per step, cosi' i log
+# dicono ESATTAMENTE quale nodo ha mangiato il tempo del grafo.
+STEP_NAMES = {
+    "Market Analyst": "market_analyst",
+    "Sentiment Analyst": "social_analyst",
+    "News Analyst": "news_analyst",
+    "Fundamentals Analyst": "fundamental_analyst",
+    "Bull Researcher": "bull_researcher",
+    "Bear Researcher": "bear_researcher",
+    "Research Manager": "research_manager",
+    "Trader": "trader_decision",
+    "Aggressive Analyst": "risk_discussion_aggressive",
+    "Neutral Analyst": "risk_discussion_neutral",
+    "Conservative Analyst": "risk_discussion_conservative",
+    "Portfolio Manager": "risk_manager_final",
+}
+
+
+def _timed(step: str, fn):
+    """Wrapper cronometro per un nodo LLM del grafo (T54 step timing)."""
+    @wraps(fn)
+    def wrapper(state):
+        t0 = time.monotonic()
+        try:
+            return fn(state)
+        finally:
+            logger.debug("GRAPH_STEP | step=%s | elapsed=%.1fs",
+                         step, time.monotonic() - t0)
+    return wrapper
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/
 # refactor drift in the speaker labels) can never hit a missing path_map entry
@@ -94,21 +130,27 @@ class GraphSetup:
         # Create workflow
         workflow = StateGraph(AgentState)
 
+        # T54: ogni nodo LLM-pesante cronometrato; add_node con il wrapper
+        # _timed se il nome del nodo ha uno step name nella mappa.
+        def add_node(name, fn):
+            step = STEP_NAMES.get(name)
+            workflow.add_node(name, _timed(step, fn) if step else fn)
+
         # Add analyst nodes to the graph
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
+            add_node(spec.agent_node, analyst_factories[spec.key]())
             workflow.add_node(spec.clear_node, create_msg_delete())
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
+        add_node("Bull Researcher", bull_researcher_node)
+        add_node("Bear Researcher", bear_researcher_node)
+        add_node("Research Manager", research_manager_node)
+        add_node("Trader", trader_node)
+        add_node("Aggressive Analyst", aggressive_analyst)
+        add_node("Neutral Analyst", neutral_analyst)
+        add_node("Conservative Analyst", conservative_analyst)
+        add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
         # Start with the first analyst

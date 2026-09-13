@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -444,6 +445,7 @@ class TradingAgentsGraph:
             tid = thread_id(company_name, str(trade_date), self._run_signature(asset_type))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
+        t_graph = time.monotonic()
         if self.debug:
             trace = []
             last_printed = None
@@ -465,6 +467,10 @@ class TradingAgentsGraph:
                 final_state.update(chunk)
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
+        # T54: GRAPH_TIMING INFO a fine grafo - durata totale (slowest_step
+        # arriva dai GRAPH_STEP DEBUG aggregati dal log viewer).
+        logger.info("GRAPH_TIMING | symbol=%s | result=ok | total=%.1fs",
+                    company_name, time.monotonic() - t_graph)
 
         # Store current state for reflection.
         self.curr_state = final_state

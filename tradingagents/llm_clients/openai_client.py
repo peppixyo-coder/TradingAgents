@@ -1,4 +1,4 @@
-import os
+import logging
 import re
 import threading
 import time
@@ -7,8 +7,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
+
 from openai import OpenAIError  # T43: body 200 {"error": ...} promosso a errore provider
+logger = logging.getLogger(__name__)
 
 from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
@@ -39,6 +40,44 @@ _ARMED: dict = {}
 
 class BudgetAborted(RuntimeError):
     """Il grafo in questo thread ha superato il budget: abort cooperativo."""
+
+
+class LLMStrikeError(RuntimeError):
+    """T54: una singola chiamata LLM fallita anche dopo il retry-once.
+    Vale 1 strike per il grafo in esecuzione su questo thread."""
+
+
+class GraphAbortError(RuntimeError):
+    """T54: il grafo su questo thread ha raggiunto LLM_GRAPH_MAX_STRIKES."""
+
+    def __init__(self, symbol: str, strikes: int):
+        self.symbol = symbol
+        self.strikes = strikes
+        super().__init__(
+            f"Graph aborted for {symbol} after {strikes} LLM strikes")
+
+
+# T54: strike counter thread-local. I worker del pool sono RIUSATI, quindi
+# il runner e' tenuto a chiamare reset_strikes() a inizio run (loop._run_one
+# e analysts.run_graph): dimenticarlo contaminerebbe le monete successive.
+_STRIKES = threading.local()
+_MAX_STRIKES = int(os.getenv("LLM_GRAPH_MAX_STRIKES", "3"))
+
+
+def reset_strikes():
+    """Azzera il contatore strike del thread corrente (obbligatorio a inizio run)."""
+    _STRIKES.n = 0
+
+
+def record_strike(label: str = "") -> None:
+    """Registra 1 strike sul thread corrente; al terzo alza GraphAbortError.
+    Il chiamante (invoke) la usa dopo aver rilanciato LLMStrikeError."""
+    n = getattr(_STRIKES, "n", 0) + 1
+    _STRIKES.n = n
+    if n >= _MAX_STRIKES:
+        raise GraphAbortError(label or "graph", n)
+
+
 
 
 def arm_budget(label, seconds):
@@ -118,16 +157,39 @@ class NormalizedChatOpenAI(ChatOpenAI):
         # T50: delay per-worker - il gap FINE->start della prossima chiamata
         # e' solo di questo thread; i grafi non si mettono in coda tra loro
         # (la concorrenza reale resta al gate del router).
-        if _CALL_DELAY_S <= 0:
-            return normalize_content(self._invoke_raw(input, config, **kwargs))
-        wait = getattr(_PER_WORKER, "last_end", 0.0) + _CALL_DELAY_S \
-            - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
+        # T54: retry-once sui soli errori provider (timeout/connessione/5xx
+        # gia' promossi a OpenAIError da _invoke_raw). Il tentativo 2 e'
+        # l'ultimo: se fallisce ancora, 1 strike per il grafo di questo
+        # thread. Altro tipo di eccezione (errore dati) rilanciata as-is.
+        def _call():
+            if _CALL_DELAY_S <= 0:
+                return self._invoke_raw(input, config, **kwargs)
+            wait = getattr(_PER_WORKER, "last_end", 0.0) + _CALL_DELAY_S \
+                - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                return self._invoke_raw(input, config, **kwargs)
+            finally:
+                _PER_WORKER.last_end = time.monotonic()
+
         try:
-            return normalize_content(self._invoke_raw(input, config, **kwargs))
-        finally:
-            _PER_WORKER.last_end = time.monotonic()
+            result = _call()
+        except LLMStrikeError:
+            record_strike(getattr(self, "_t54_symbol", "") or "graph")
+            raise
+        except OpenAIError as e:
+            logger.warning(
+                "LLM call failed on attempt 1 for model=%s (%r); retrying once",
+                self.model_name, e)
+            time.sleep(2)
+            try:
+                result = _call()
+            except OpenAIError as e2:
+                raise LLMStrikeError(
+                    f"model={self.model_name}: {e2!r}") from e2
+        record_strike(getattr(self, "_t54_symbol", "") or "graph")
+        return normalize_content(result)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

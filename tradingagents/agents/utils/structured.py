@@ -80,6 +80,14 @@ def invoke_structured_or_freetext(
                 raise ValueError("structured output returned no parsed result")
             return render(result)
         except Exception as exc:
+            # T54: strike/abort sono segnali del runner, non un JSON
+            # malformato - il fallback free-text assorbirebbe lo strike e
+            # raddopperebbe la spesa LLM proprio quando il provider e' ko.
+            from tradingagents.llm_clients.openai_client import (
+                BudgetAborted, GraphAbortError, LLMStrikeError)
+            if isinstance(exc, (BudgetAborted, GraphAbortError,
+                                 LLMStrikeError)):
+                raise
             logger.warning(
                 "%s: structured-output invocation failed (%s); retrying once as free text",
                 agent_name, exc,

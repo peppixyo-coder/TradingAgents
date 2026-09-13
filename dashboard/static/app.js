@@ -7,6 +7,14 @@ const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
  apCoin: null, charts: {}, eqTf: "all", events: [],
  tDetail: {}, tPending: new Set(), scanDetail: {}, scanPending: new Set() }; // T53: detail cache on-demand
 
+/* A-15: la middleware /api/* esige X-API-Key; la chiave arriva dal meta
+   tag iniettato dal server in index.html (niente hardcode nel JS). */
+const API_KEY = document.querySelector('meta[name="api-key"]')?.content || "";
+const apiFetch = (url, opts = {}) => {
+  opts.headers = opts.headers || {};
+  if (API_KEY) opts.headers["X-API-Key"] = API_KEY;
+  return fetch(url, opts);
+};
 /* ---------- formatters ---------- */
 const usd = v => { if (v == null || isNaN(v)) return "—";
   const d = Math.abs(v) < 100 ? 2 : 0;
@@ -344,7 +352,7 @@ async function fetchTradeDetail(id) {
   if (S.tDetail[id] || S.tPending.has(id)) return;  // T53: una fetch per trade
   S.tPending.add(id);
   try {
-    const d = await (await fetch(`/api/trade/${id}`)).json();
+    const d = await (await apiFetch(`/api/trade/${id}`)).json();
     S.tDetail[id] = d;
     const p = document.getElementById(`td-panel-${id}`), b = document.getElementById(`td-debate-${id}`),
           ra = document.getElementById(`td-rationale-${id}`);
@@ -492,7 +500,7 @@ async function fetchScanDetail(key, r) {
   if (S.scanDetail[key] || S.scanPending.has(key)) return;  // T53: una fetch per scan
   S.scanPending.add(key);
   try {
-    const d = await (await fetch(`/api/scan?ts=${encodeURIComponent(r.ts)}&coin=${r.coin}`)).json();
+    const d = await (await apiFetch(`/api/scan?ts=${encodeURIComponent(r.ts)}&coin=${r.coin}`)).json();
     S.scanDetail[key] = d;
     const cur = S.scans[$("#ag-cycle-sel").selectedIndex];
     if (cur && `${cur.ts}|${cur.coin}` === key) {
@@ -530,7 +538,7 @@ async function openAsset(coin) {
   $("#ap-title").textContent = coin + "-PERP";
   $$("#tbl-market tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.coin === coin));
   try {
-    const candles = await (await fetch(`/api/candles/${coin}?interval=15m&hours=24`)).json();
+    const candles = await (await apiFetch(`/api/candles/${coin}?interval=15m&hours=24`)).json();
     if (!S.charts.ap) {
       S.charts.ap = LightweightCharts.createChart($("#ap-chart"), {
         layout: { background: { color: "transparent" }, textColor: "#8B94A3",
@@ -545,7 +553,7 @@ async function openAsset(coin) {
     S.charts.apC.setData(candles.map(c => ({
       time: Math.floor(c.t / 1000), open: +c.o, high: +c.h, low: +c.l, close: +c.c })));
     S.charts.ap.timeScale().fitContent();
-    const book = await (await fetch(`/api/l2book/${coin}`)).json();
+    const book = await (await apiFetch(`/api/l2book/${coin}`)).json();
     const raw = Array.isArray(book.levels) ? book.levels : (book.level || []);
     const pair = Array.isArray(raw[0]) ? raw
       : [(raw.find(l => l.side === "B") || {}).levels || [],
@@ -555,7 +563,7 @@ async function openAsset(coin) {
     $("#ap-book").innerHTML =
       asks.map(l => `<div class="r a"><span>${px(l.px)}</span><span>${num(l.sz, 3)}</span></div>`).join("") +
       bids.map(l => `<div class="r b"><span>${px(l.px)}</span><span>${num(l.sz, 3)}</span></div>`).join("");
-    const fund = await (await fetch(`/api/funding/${coin}`)).json();
+    const fund = await (await apiFetch(`/api/funding/${coin}`)).json();
     const fdata = (Array.isArray(fund) ? fund : []).map(f => ({
       time: Math.floor(f.time / 1000), value: +(f.fundingRate * 100).toFixed(4) }));
     if (fdata.length) {
@@ -635,5 +643,8 @@ document.addEventListener("DOMContentLoaded", () => {
     $$("#eq-tf .tf").forEach(x => x.classList.toggle("on", x === b));
     drawEquity();
   });
+  // A-15: link Report e' navigazione pura (no header) -> key come query
+  const rep = $('a[href="/api/report"]');
+  if (rep && API_KEY) rep.href = `/api/report?key=${encodeURIComponent(API_KEY)}`;
   wsConnect();
 });

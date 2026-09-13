@@ -619,7 +619,8 @@ API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 @app.middleware("http")
 async def api_key_guard(request: Request, call_next):
     if API_KEY and request.url.path.startswith("/api") \
-            and request.headers.get("X-API-Key") != API_KEY:
+            and request.headers.get("X-API-Key") != API_KEY \
+            and request.query_params.get("key") != API_KEY:
         return PlainTextResponse("unauthorized", status_code=401)
     return await call_next(request)
 
@@ -839,6 +840,19 @@ async def startup():
 import faulthandler
 if hasattr(signal, "SIGUSR1"):  # POSIX only; Windows import altrimenti rompe i test
     faulthandler.register(signal.SIGUSR1)
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    """A-15: serve la SPA con il meta api-key iniettato, cosi' il fetch
+    della UI porta l'header X-API-Key richiesto dalla middleware senza
+    hardcodare la chiave nel JS (StaticFiles non puo' iniettarla)."""
+    with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    if API_KEY:
+        html = html.replace("<head>",
+                            f'<head><meta name="api-key" content="{API_KEY}">')
+    return Response(html, media_type="text/html")
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

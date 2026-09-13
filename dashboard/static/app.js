@@ -58,8 +58,8 @@ function setTxt(id, v) { const e = $("#" + id); if (e) e.textContent = v; }
 function onMetrics(m) {
   S.k = m.kpis; S.equity = m.equity; S.trades = m.trades; S.market = m.market;
   S.agents = m.agents; S.logs = m.logs; S.cfg = m.cfg; S.conn = m.conn;
+  S.llmDiag = m.llmDiag || {};  // T54: LLM Health (System tab)
   S.events = m.events || [];
-  S.scans = (m.agents.recent || []).slice().reverse();
   renderConn(m.conn); renderHeaderMeta(); renderKpiStatics();
   if (S.tab === "overview") renderOverview();
   if (S.tab === "trades") renderTrades();
@@ -582,10 +582,15 @@ function renderSystem() {
     ["Lev cap", c.lev_cap + "x"],
     ["DD g/sett", `${c.daily_dd} / ${c.weekly_dd}`], ["Stop ATR×", c.atr_stop_mult],
     ["z min", c.signal_z_min], ["Scan", c.scanIntervalS + "s"], ["WS collect", c.wsCollectS + "s"]]);
+  const d = S.llmDiag || {};
+  $("#sys-llm").innerHTML = kv([
+    ["Timeouts (24h)", d.last_24h?.graph_timeouts ?? "—"],
+    ["Aborts (24h)", d.last_24h?.graph_aborts ?? "—"],
+    ["Strikes (24h)", d.last_24h?.llm_strikes_total ?? "—"],
+    ["Avg grafo ok", d.last_24h?.avg_graph_duration_ok_s != null ? d.last_24h.avg_graph_duration_ok_s + "s" : "—"],
+    ["Slowest step", (() => { const s = d.last_24h?.slowest_steps?.[0];
+      return s ? `${s.step} avg ${s.avg_s}s` : "—"; })()]]);
   const errs = (k.errorsList || []).slice().reverse();
-  $("#sys-errors").innerHTML = errs.length
-    ? errs.slice(0, 10).map(e => `${e.ts} ${esc(e.error || "")}`).join("\n")
-    : "nessun errore in 24h.";
   const lv = $("#sys-log"), follow = $("#log-follow").checked;
   const atBottom = lv.scrollTop + lv.clientHeight >= lv.scrollHeight - 30;
   lv.textContent = S.logs.join("\n");

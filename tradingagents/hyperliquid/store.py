@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS intents (
   closed_ts TEXT,
   close_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS llm_diagnostics (   -- T54: timeout/strike/abort/ok
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,              -- ISO8601 UTC
+  symbol TEXT NOT NULL,
+  event_type TEXT NOT NULL,     -- 'timeout'|'abort'|'strike'|'ok'
+  step_name TEXT,                -- NULL per eventi a livello grafo
+  duration_s REAL,
+  strikes INTEGER DEFAULT 0
+);
 """
 
 
@@ -98,6 +107,19 @@ def kv_get(k, default=None):
     with connect() as conn:
         row = conn.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
         return row["v"] if row else default
+
+
+def llm_diag(symbol, event_type, step_name=None, duration_s=None, strikes=0):
+    """T54: una riga llm_diagnostics per evento LLM (timeout/abort/strike/ok)."""
+    try:
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO llm_diagnostics(ts,symbol,event_type,step_name,"
+                "duration_s,strikes) VALUES(?,?,?,?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S%z"), symbol, event_type,
+                 step_name, duration_s, strikes))
+    except sqlite3.OperationalError:
+        pass  # tabella assente (DB pre-T54 senza init): mai far crashare il bot
 
 
 def kv_set(k, v):

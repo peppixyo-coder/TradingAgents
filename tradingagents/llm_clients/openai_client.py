@@ -76,6 +76,11 @@ def record_strike(label: str = "") -> None:
     Il chiamante (invoke) la usa dopo aver rilanciato LLMStrikeError."""
     n = getattr(_STRIKES, "n", 0) + 1
     _STRIKES.n = n
+    try:  # T54: diagnostica dashboard (best-effort, mai bloccare la chiamata)
+        from tradingagents.hyperliquid import store
+        store.llm_diag(label or "graph", "strike", strikes=n)
+    except Exception:
+        pass
     if n >= _MAX_STRIKES:
         raise GraphAbortError(label or "graph", n)
 

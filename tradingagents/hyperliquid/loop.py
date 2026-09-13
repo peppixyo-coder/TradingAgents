@@ -824,6 +824,8 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
             # worker si libera molto prima del timeout per-grafo.
             log(f"[cycle] SKIP {r['coin']}: {e!r} - riprova al prossimo ciclo")
             _log_cycle(stage="skip", coin=r["coin"], error=repr(e))
+            if isinstance(e, llm.GraphAbortError):
+                store.llm_diag(r["coin"], "abort", strikes=e.strikes)
             continue
         except Exception as e:  # ponytail: una coin senza dati (es.
             tb = " <- ".join(traceback.format_exc().strip().splitlines()[-3:])
@@ -835,11 +837,14 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         log(f"[cycle] {tag} {res['coin']} z={res['ofi_z']} "
             f"conv={res['conviction']} - {res.get('reason', 'ok')} "
             f"({res.get('dur_s', 0):.0f}s)")
+        store.llm_diag(res["coin"], "ok",                      # T54
+                       duration_s=res.get("dur_s", 0) or None)
     for fut in not_done:
         r = futs[fut]
         fut.cancel()
         log(f"[cycle] TIMEOUT {r['coin']}: budget {budget:.0f}s esaurito "
             f"(per-grafo {GRAPH_TIMEOUT_S}s), abbandonato")
+        store.llm_diag(r["coin"], "timeout", duration_s=budget)  # T54
         _log_cycle(stage="error", coin=r["coin"],
                    error=f"graph timeout {budget:.0f}s")
         _GRAPH_COOLDOWN[r["coin"]] = time.monotonic() + GRAPH_COOLDOWN_S

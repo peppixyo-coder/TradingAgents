@@ -563,6 +563,13 @@ class Agg:
     def snapshot_slow(self):
         self.load_cycles()
         self.backfill_equity()
+        self._llm_diag_at = getattr(self, "_llm_diag_at", 0)
+        if time.time() - self._llm_diag_at > 60:  # T54: cache diag LLM 60s
+            self._llm_diag_at = time.time()
+            try:
+                self._llm_diag = api_llm_timeouts()
+            except Exception:
+                self._llm_diag = None
         trades = _light(self.build_trades())
         k = self.kpis(trades)
         self.last_kpis = k
@@ -590,6 +597,7 @@ class Agg:
                 "hlrest": time.time() - self.last_rest_ok < 60,
                 "router": any(r.get("llm_ms") for r in self.cycles[-50:]),
             },
+            "llmDiag": getattr(self, "_llm_diag", None),  # T54
         }
 
 
@@ -647,6 +655,53 @@ def api_scan(ts: str, coin: str):
     if not rec:
         raise HTTPException(404, "scan inesistente")
     return rec
+
+@app.get("/api/diagnostics/llm_timeouts")
+def api_llm_timeouts():
+    """T54: diagnostica timeout LLM da llm_diagnostics (bot.db)."""
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S",
+                           time.gmtime(time.time() - 86400))
+    try:
+        with store.connect() as conn:
+            def _one(sql, args=()):
+                return conn.execute(sql, args).fetchone()
+            r24 = _one("SELECT "
+                       "SUM(event_type='timeout') t, "
+                       "SUM(event_type='abort') a, "
+                       "SUM(event_type='strike') s FROM llm_diagnostics "
+                       "WHERE ts>=? AND ts<'9999'", (cutoff,))
+            ok24 = _one("SELECT COUNT(*) n, AVG(duration_s) d FROM "
+                        "llm_diagnostics WHERE ts>=? AND event_type='ok'",
+                        (cutoff,))
+            steps = conn.execute(
+                "SELECT step_name step, AVG(duration_s) avg_s, "
+                "MAX(duration_s) max_s, COUNT(*) n FROM llm_diagnostics "
+                "WHERE ts>=? AND step_name IS NOT NULL "
+                "GROUP BY step_name ORDER BY avg_s DESC LIMIT 5",
+                (cutoff,)).fetchall()
+            all_time = _one("SELECT SUM(event_type='timeout') t, "
+                            "SUM(event_type='abort') a FROM llm_diagnostics")
+    except Exception:
+        # tabella assente su DB pre-T54: zeri, non 500
+        return {"last_24h": {"graph_timeouts": 0, "graph_aborts": 0,
+                             "llm_strikes_total": 0,
+                             "avg_graph_duration_ok_s": None,
+                             "slowest_steps": []},
+                "all_time": {"graph_timeouts": 0, "graph_aborts": 0}}
+    return {
+        "last_24h": {
+            "graph_timeouts": int(r24["t"] or 0),
+            "graph_aborts": int(r24["a"] or 0),
+            "llm_strikes_total": int(r24["s"] or 0),
+            "avg_graph_duration_ok_s": (round(ok24["d"], 1)
+                                        if ok24 and ok24["n"] else None),
+            "slowest_steps": [{"step": r["step"], "avg_s": round(r["avg_s"], 1),
+                               "max_s": round(r["max_s"], 1), "count": r["n"]}
+                              for r in steps],
+        },
+        "all_time": {"graph_timeouts": int(all_time["t"] or 0),
+                     "graph_aborts": int(all_time["a"] or 0)},
+    }
 
 
 @app.get("/api/report")

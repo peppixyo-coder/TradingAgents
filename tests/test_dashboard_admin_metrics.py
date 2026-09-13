@@ -47,11 +47,16 @@ def test_rem_derived_and_fee_on_real_legs(tmp_path):
     agg = SimpleNamespace(cycles=[], exit_px=lambda c, t: None)
     t = server.Agg.build_trades(agg)[0]
     rem = 10.0 - 3.0 - 3.0  # 4 residui allo stop (95)
-    assert t["pnl"] == round((110 - 100) * 3 + (112 - 100) * 3
-                             + (95 - 100) * rem, 2)  # = 31.0
-    fee_in, fee_tps = 100 * 10 * 3.5e-4, (110 * 3 + 112 * 3) * 3.5e-4
+    # A-07: pnl GROSSO (pre-fee) — esposto per trasparenza
+    assert t["pnlGross"] == round((110 - 100) * 3 + (112 - 100) * 3
+                                  + (95 - 100) * rem, 2)  # = 31.0
+    # A-06: split taker/maker — entry taker, TP fillati MAKER, stop taker
+    fee_in = 100 * 10 * 3.5e-4
+    fee_tps = (110 * 3 + 112 * 3) * 1e-4
     fee_rem = 95 * rem * 3.5e-4
     assert t["fee"] == round(fee_in + fee_tps + fee_rem, 4)
+    # A-07: pnl esposto = NETTO delle fee
+    assert t["pnl"] == round(t["pnlGross"] - t["fee"], 2)
 
 
 def test_admin_close_marked_and_excluded_from_kpis(tmp_path):

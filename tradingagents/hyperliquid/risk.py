@@ -8,9 +8,14 @@ e' scelta dal Trader Agent per ogni trade: nessun cap per-posizione nel codice.
 Il RiskManager la clippa solo al massimo consentito dall'exchange per l'asset
 e valuta la leva TOTALE del portfolio come advisory con riduzione di size.
 """
+import time
 from . import store
 from .executor import TP_MULTS   # T44: fonte unica del primo take-profit
-import time
+
+# A-20: fee HyPaper (worker/order-matcher.ts): IOC/trigger = taker 3.5bps,
+# limit resting che fillano = maker 1bp. Fonte gemella di dashboard/server.py.
+TAKER_FEE = 0.00035
+MAKER_FEE = 0.0001
 
 
 def roll_period_baselines(cfg, equity_now):
@@ -48,11 +53,20 @@ def size_order(cfg, balance, mid, sigma, atr, conviction,
 
     qty = round(notional / mid, 5) if mid > 0 else 0.0
     stop_dist = cfg.atr_stop_mult * atr if atr and atr > 0 else mid * 0.02
-    # T44: il primo TP deve stare OLTRE lo stop (R:R primario > 1), se no le
-    # fee mangiano il margine: TP1 dentro lo stop -> veto.
+    # T44/A-20 (audit): TP1_INSIDE_STOP resta (check geometrico), MA il vero
+    # fee-ratio veto della spec ora esiste: il profitto atteso del TP1 deve
+    # coprire 3x la fee round-trip (entry taker + TP1 maker — HyPaper
+    # order-matcher: i limit resting fillano maker 0.01%).
     if atr and atr > 0 and TP_MULTS[0] * atr <= stop_dist:
         vetoes.append(f"TP1_INSIDE_STOP (TP1 {TP_MULTS[0]}ATR <= stop "
                       f"{cfg.atr_stop_mult}ATR)")
+    if atr and atr > 0 and mid > 0:
+        tp1_dist = TP_MULTS[0] * atr
+        tp1_profit = tp1_dist * (notional / mid if mid else 0)
+        round_trip_fee = notional * (TAKER_FEE + MAKER_FEE)
+        if tp1_profit < 3.0 * round_trip_fee:
+            vetoes.append(f"FEE_RATIO_VETO (TP1 ${tp1_profit:.2f} < "
+                          f"3x fee ${round_trip_fee:.2f})")
     # Leva del PM: nessun default nel codice; se manca -> veto (skip ciclo).
     if isinstance(leverage, bool) or not isinstance(leverage, (int, float)) or float(leverage) < 1:
         vetoes.append("LEVERAGE_MISSING (il PM non ha scelto la leva)")

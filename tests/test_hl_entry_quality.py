@@ -262,3 +262,29 @@ def test_a09_stale_posizione_aperta_da_altro_worker(monkeypatch):
         assert len(store.intents_open()) == 1   # solo quella dell'"altro"
     finally:
         store.DB = old_db
+
+
+def test_a20_fee_ratio_veto():
+    """A-20: TP1 profitto < 3x fee round-trip -> FEE_RATIO_VETO.
+    Costruito per stare sotto la soglia: ATR piccolo, mid alto."""
+    from tradingagents.hyperliquid import risk as RK
+    cfg = SimpleNamespace(base_frac=0.10, min_notional=3000.0,
+                          atr_stop_mult=2.0, lev_cap=3)
+    # notional = 100000*0.10*garch(conv) ~ 10k*conv; mid 100 -> qty ~100*conv
+    # ATR 0.2 -> TP1 dist 0.5 -> profitto ~0.5*qty = 0.5*100*conv
+    # fee rt = notional*(4.5e-4) ~ 10000*conv*4.5e-4 = 4.5*conv
+    # 3x fee = 13.5*conv > profitto ~50*conv ... serve ATR molto piu' piccolo
+    p = RK.size_order(cfg, 100000, 100.0, 1.0, 0.02, 0.5,
+                      coin="BTC", leverage=2)
+    # conv 0.5, sigma 1.0 -> garch 0.58 -> notional = 100000*0.1*0.58*0.5=2900
+    # sotto MIN_NOTIONAL(3000) -> veto notional, NON fee-ratio. Alza balance.
+    p = RK.size_order(cfg, 400000, 100.0, 1.0, 0.02, 0.5,
+                      coin="BTC", leverage=2)
+    # notional=400000*0.1*0.58*0.5=11600; TP1 profit=0.05*116=5.8;
+    # fee rt=11600*4.5e-4=5.22; 3x=15.66 > 5.8 -> FEE_RATIO_VETO
+    assert "FEE_RATIO_VETO" in (p["veto"] or ""), p["veto"]
+
+    # e NON scatta con ATR generoso
+    p2 = RK.size_order(cfg, 400000, 100.0, 1.0, 2.0, 0.5,
+                       coin="BTC", leverage=2)
+    assert p2["veto"] is None, p2["veto"]

@@ -27,8 +27,8 @@ def test_cache_errori_blocca_6h():
     assert P.yf_ticker_resolves("xyz:ZHIPU") is True
     P.yf_ticker_failed("xyz:ZHIPU")
     assert P.yf_ticker_resolves("xyz:ZHIPU") is False
-    # TTL scaduto (simula 7h fa) -> risolve di nuovo
-    P._YF_ERR_CACHE["ZHIPU"] = time.monotonic() - (7 * 3600)
+    # TTL scaduto (simula 7h fa) -> risolve di nuovo (T54: (ts, ttl) tuple)
+    P._YF_ERR_CACHE["ZHIPU"] = (time.monotonic() - (7 * 3600), 6 * 3600)
     assert P.yf_ticker_resolves("xyz:ZHIPU") is True
     P._YF_ERR_CACHE.clear()
 

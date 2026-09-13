@@ -11,7 +11,7 @@ import time
 import os
 import threading
 from openai import OpenAIError  # T42: errore provider (9router giu'), non dati
-
+from tradingagents.dataflows.errors import NoMarketDataError  # T54: outage transitorio
 from . import analysts
 from ..llm_clients.openai_client import (BudgetAborted, GraphAbortError,
                                          LLMStrikeError, arm_budget,
@@ -46,9 +46,9 @@ YF_TICKERS = {
     # azioni estere con suffisso di borsa
     "SMSN": "005930.KS",
 }
-
-_YF_ERR_CACHE = {}          # base -> monotonic ts dell'ultimo insuccesso
+_YF_ERR_CACHE = {}          # base -> (monotonic ts, ttl_s) dell'ultimo insuccesso
 _YF_ERR_TTL = 6 * 3600      # ticket C: dopo un errore non ritentare per 6h
+_YF_ERR_TTL_TRANSIENT = 1800  # T54: outage Yahoo transitorio su ticker MAPPATO
 
 
 def _yf_ticker(coin: str) -> str:
@@ -61,18 +61,21 @@ def _yf_ticker(coin: str) -> str:
 
 
 def yf_ticker_resolves(coin: str) -> bool:
-    """False se il ticker Yahoo e' in cache errori (ultimi 6h): evita di
-    sprecare una chiamata LLM completa su un simbolo che non risolve."""
+    """False se il ticker Yahoo e' in cache errori (TTL del tipo d'errore):
+    evita di sprecare una chiamata LLM completa su un simbolo che non risolve."""
     base = coin.split(":", 1)[-1].replace("-PERP", "")
-    ts = _YF_ERR_CACHE.get(base)
-    return not (ts is not None and time.monotonic() - ts < _YF_ERR_TTL)
+    hit = _YF_ERR_CACHE.get(base)
+    return not (hit is not None
+                and time.monotonic() - hit[0] < hit[1])
 
 
-def yf_ticker_failed(coin: str):
+def yf_ticker_failed(coin: str, transient=False):
     """Segna il ticker come fallito: run_upstream lo richiama quando il
-    grafo upstream alza (ticker Yahoo inesistente e simili)."""
+    grafo upstream alza. T54: NoMarketDataError su ticker MAPPATO = outage
+    Yahoo transitorio -> TTL 30min (ritenta presto); il resto resta 6h."""
     base = coin.split(":", 1)[-1].replace("-PERP", "")
-    _YF_ERR_CACHE[base] = time.monotonic()
+    _YF_ERR_CACHE[base] = (time.monotonic(),
+                           _YF_ERR_TTL_TRANSIENT if transient else _YF_ERR_TTL)
 
 
 def _graph(asset_class: str, exec_ctx: str, coin: str):
@@ -139,6 +142,11 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
         raise  # T42: provider giu' (9router 502/429/timeout): i dati sono
                # ok, niente veleno yf - il fallback custom raddoppierebbe
                # la spesa LLM proprio quando il provider e' in difficolta'
+    except NoMarketDataError:
+        # T54: Yahoo ha risposto ma senza righe -> outage TRANSITORIO su un
+        # ticker mappabile: veleno corto (30min), la coin riprova presto.
+        yf_ticker_failed(coin, transient=True)
+        raise
     except Exception as e:
         yf_ticker_failed(coin)  # ticket C: non ripetere lo stesso errore per 6h
         raise

@@ -292,6 +292,15 @@ def maintain_tps(c, cfg, ex):
     live = {p["position"]["coin"]: abs(float(p["position"]["szi"]))
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
     resting = _resting_oids(c, cfg)
+    if resting is None:
+        # A-02 (audit): fail-closed. Senza l'insieme degli oid resting la
+        # membership-guard e' spenta e un QUAISI restringimento di posizione
+        # (drift/esterno) verrebbe marcato come fill TP -> falso TP1, stop a BE
+        # fantasma, remaining/PnL corrotti per sempre. Rimanda al prossimo
+        # pass (60s) invece di tirare a indovinare.
+        log(f"[TP] ATTENZIONE frontendOpenOrders non disponibile: "
+            f"rilevamento fill TP rimandato al prossimo pass")
+        return 0, 0
     fills = be_moves = 0
     for _row in store.intents_open():
         it = dict(_row)

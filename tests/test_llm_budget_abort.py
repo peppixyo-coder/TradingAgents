@@ -209,9 +209,9 @@ def test_error_body_200_promosso_openai_error(monkeypatch):
 
     _patch(monkeypatch, probe)
     llm = _llm()
-    with pytest.raises(OpenAIError) as ei:
+    with pytest.raises(O.LLMStrikeError) as ei:  # T54: promote+retry+strike
         llm.invoke("x")
-    assert "Nvidia" in str(ei.value)
+    assert "Nvidia" in str(ei.value) or "Nvidia" in str(ei.value.__cause__)
 
 
 def test_valueerror_puro_passa_invariato(monkeypatch):

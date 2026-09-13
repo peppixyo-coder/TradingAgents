@@ -13,7 +13,8 @@ import threading
 from openai import OpenAIError  # T42: errore provider (9router giu'), non dati
 
 from . import analysts
-from ..llm_clients.openai_client import (BudgetAborted, arm_budget,
+from ..llm_clients.openai_client import (BudgetAborted, GraphAbortError,
+                                         LLMStrikeError, arm_budget,
                                          disarm_budget)
 
 # rating PM upstream -> contratto HL (conviction resta meccanico a valle)
@@ -132,6 +133,8 @@ def run_upstream(cfg, coin: str, micro: dict | None = None) -> dict:
             _yf_ticker(coin), t0.strftime("%Y-%m-%d"))
     except BudgetAborted:
         raise  # T41: budget, non ticker rotto: NON avvelenare la cache yf (6h)
+    except (LLMStrikeError, GraphAbortError):
+        raise  # T54: strike/abort del grafo, non errore dati: niente veleno yf
     except OpenAIError:
         raise  # T42: provider giu' (9router 502/429/timeout): i dati sono
                # ok, niente veleno yf - il fallback custom raddoppierebbe

@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import threading
 import time
@@ -7,8 +8,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage
-
+from langchain_openai import ChatOpenAI
 from openai import OpenAIError  # T43: body 200 {"error": ...} promosso a errore provider
+
 logger = logging.getLogger(__name__)
 
 from .api_key_env import get_api_key_env
@@ -173,22 +175,30 @@ class NormalizedChatOpenAI(ChatOpenAI):
             finally:
                 _PER_WORKER.last_end = time.monotonic()
 
+        def _strike_label():
+            # il budget armato porta il nome della coin (loop._run_one);
+            # fuori dal loop (test, CLI) vale "graph"
+            e = _ARMED.get(threading.get_ident())
+            if e:
+                _, lab = min(e[1])
+                return lab.split()[-1] if lab else "graph"
+            return "graph"
+
         try:
             result = _call()
-        except LLMStrikeError:
-            record_strike(getattr(self, "_t54_symbol", "") or "graph")
-            raise
         except OpenAIError as e:
             logger.warning(
                 "LLM call failed on attempt 1 for model=%s (%r); retrying once",
-                self.model_name, e)
+                getattr(self, "model_name", "?"), e)
             time.sleep(2)
             try:
                 result = _call()
             except OpenAIError as e2:
+                # secondo fallimento: 1 strike; al 3° record_strike alza
+                # GraphAbortError al posto di LLMStrikeError
+                record_strike(_strike_label())
                 raise LLMStrikeError(
-                    f"model={self.model_name}: {e2!r}") from e2
-        record_strike(getattr(self, "_t54_symbol", "") or "graph")
+                    f"model={getattr(self, 'model_name', '?')}: {e2!r}") from e2
         return normalize_content(result)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):

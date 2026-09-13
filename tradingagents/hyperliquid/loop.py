@@ -773,6 +773,9 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         # upstream, piu' stretto, attorno al solo g.propagate. Scaduto,
         # invoke() alza BudgetAborted alla prossima chiamata LLM: lo
         # zombie non resta in volo per ore.
+        # T54: reset strike per-run - i worker del pool sono riusati, senza
+        # reset gli strike della coin precedente contaminerebbero questa.
+        llm.reset_strikes()
         llm.arm_budget(r["coin"], GRAPH_TIMEOUT_S)
         try:
             return run_cycle(cfg, c, ex, r["coin"], pre=pre)
@@ -814,9 +817,11 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         r = futs[fut]
         try:
             res = fut.result()
-        except (llm.BudgetAborted, OpenAIError) as e:
+        except (llm.BudgetAborted, llm.GraphAbortError, OpenAIError) as e:
             # T42: budget sforato o provider giu': NON e' una coin rotta ->
             # niente cooldown 1h, si riprova al prossimo ciclo di scansione.
+            # T54: GraphAbortError (3 strike LLM) stesso trattamento - il
+            # worker si libera molto prima del timeout per-grafo.
             log(f"[cycle] SKIP {r['coin']}: {e!r} - riprova al prossimo ciclo")
             _log_cycle(stage="skip", coin=r["coin"], error=repr(e))
             continue

@@ -655,7 +655,14 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     plan = dict(plan, qty=qty_lot, notional=round(qty_lot * mid, 2))
     # ---- esecuzione + stop nativo + persistenza intento ----
     with _ORDER_LOCK:
-        ex.set_leverage(coin, plan["leverage"])
+        try:
+            ex.set_leverage(coin, plan["leverage"])   # A-05: hard-fail
+        except Exception as e:
+            # A-05 (audit): leva non applicata = posizione a 20x di default:
+            # SKIP del trade, non proseguiamo con math del margine divergente.
+            log(f"[Risk] ATTENZIONE {coin}: set_leverage {plan['leverage']}x "
+                f"fallito ({e!r}) - TRADE SALTATO")
+            return done(False, f"set_leverage fallito: {e!r}", {"plan": plan})
         fill = ex.place_market(coin, llm_side, plan["qty"], mid)
         if fill["status"] != "filled":
             return done(False, f"fill non eseguito: {fill['status']} {fill.get('error', '')}",

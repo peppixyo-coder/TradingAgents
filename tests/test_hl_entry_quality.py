@@ -105,3 +105,57 @@ def test_run_cycle_pm_conf_alta_arriva_al_rischio(monkeypatch):
     assert res["executed"] is False
     assert "MIN_NOTIONAL" in res["reason"]
     assert "PM conf" not in res["reason"]
+
+
+def test_a05_set_leverage_fallito_salta_trade(monkeypatch):
+    """A-05: set_leverage che alza -> NESSUN ordine piazzato, run_cycle
+    ritorna skip con motivo esplicito (niente posizione a 20x di nascosto)."""
+    import tradingagents.hyperliquid.executor as EX
+
+    class BoomEx:
+        calls = []
+        def set_leverage(self, coin, lev):
+            BoomEx.calls.append(("lev", coin, lev))
+            raise EX.ExecutorError("mirror down")
+        def place_market(self, *a, **k):
+            BoomEx.calls.append(("market",) + a)
+            raise AssertionError("place_market non deve essere chiamato")
+        def place_tp_orders(self, *a, **k):
+            raise AssertionError("TP non devono essere piazzati")
+
+    old_db = _fresh_db()
+    try:
+        pre = {"ctx": {"prevDayPx": 100.0, "funding": 0.0001,
+                       "openInterest": 1000.0, "dayNtlVlm": 1e6},
+               "mid": 100.0, "h1": _candles(30), "h4": _candles(30),
+               "d1": _candles(30), "trades": [], "fng": (50, "N"),
+               "heads": [], "ofi_z": 2.0}
+        g = {"decision": {"side": "long", "leverage": 2,
+                          "confidence": 0.9, "rationale": "t"},
+             "panel": {}, "debate": {}}
+        cfg = SimpleNamespace(wallet="w", signal_z_min=1.0, ws_collect_seconds=90,
+                              lev_cap=3, base_frac=0.10, min_notional=3000.0,
+                              min_trade_confidence=0.65, atr_stop_mult=2.0,
+                              daily_dd=-0.05, weekly_dd=-0.10)
+        c = SimpleNamespace(
+            clearinghouse_state=lambda w: {"assetPositions": []},
+            all_mids=lambda: {"BTC": 100.0},
+            candles_cached=lambda *a, **k: [],
+            asset_index=lambda coin: (0, {"szDecimals": 5}))
+        monkeypatch.setattr(L, "equity", lambda c, cfg: 100000.0)
+        monkeypatch.setattr(L, "registry",
+                            SimpleNamespace(max_leverage=lambda c, coin: 3))
+        monkeypatch.setattr(L.pipelines, "run_pipeline",
+                            lambda cfg, coin, blob, micro=None: g)
+        monkeypatch.setattr(L, "_touch_heartbeat", lambda: None)
+        monkeypatch.setattr(L, "_log_cycle", lambda **kw: None)
+        monkeypatch.setattr(L.scanner, "correlated_open_count",
+                            lambda *a, **k: 0)
+        res = L.run_cycle(cfg, c, BoomEx(), "BTC", pre=pre)
+        assert res["executed"] is False
+        assert "set_leverage fallito" in res["reason"]
+        assert ("lev", "BTC", 2) in BoomEx.calls
+        assert all(cl[0] != "market" for cl in BoomEx.calls)
+        assert not store.intents_open()
+    finally:
+        store.DB = old_db

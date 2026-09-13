@@ -59,18 +59,26 @@ class HyperliquidExecutor:
                 f"TRADING_MODE={cfg.trading_mode}: transport live richiede go esplicito dell'umano")
 
     def set_leverage(self, coin, leverage, is_cross=True):
+        """A-05 (audit): HARD-FAIL. HyPaper implementa updateLeverage
+        (api/routes/exchange.ts:97-110): l'unico fallimento legittimo e'
+        mirror giu'/errore validazione - entrambi devono abortire il trade,
+        perche' la posizione resterebbe alla leva di default dell'exchange
+        (20x) mentre il bot crede a quella scelta dal PM (margin math 10x
+        divergente)."""
         idx, uni = self.c.asset_index(coin)
         if uni.get("onlyIsolated"):  # HIP-3: il mercato non ammette cross
             is_cross = False
-        try:
-            return self.c._post("/exchange", {
-                "wallet": self.cfg.wallet,
-                "action": {"type": "updateLeverage", "asset": idx,
-                           "isCross": is_cross, "leverage": int(leverage)},
-            })
-        except Exception as e:
-            # ponytail: il mirror puo' non implementare updateLeverage; il fill resta la verita'
-            return {"status": "skipped", "error": repr(e)}
+        resp = self.c._post("/exchange", {
+            "wallet": self.cfg.wallet,
+            "action": {"type": "updateLeverage", "asset": idx,
+                       "isCross": is_cross, "leverage": int(leverage)},
+        })
+        st = str(((resp.get("response", {}) or {}).get("data", {}) or {})
+                 .get("statuses", [""])[0] if isinstance(resp, dict) else "")
+        if isinstance(resp, dict) and (resp.get("status") == "ok" or st == "success"):
+            return resp
+        raise ExecutorError(
+            f"set_leverage {coin} {leverage}x risposta inattesa: {resp}")
 
     def place_market(self, coin, side, qty, ref_px, reduce_only=False):
         """Market IOC. side in {'long','short'}; long => buy aggressivo.

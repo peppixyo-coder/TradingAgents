@@ -59,6 +59,7 @@ function onMetrics(m) {
   S.k = m.kpis; S.equity = m.equity; S.trades = m.trades; S.market = m.market;
   S.agents = m.agents; S.logs = m.logs; S.cfg = m.cfg; S.conn = m.conn;
   S.llmDiag = m.llmDiag || {};  // T54: LLM Health (System tab)
+  S.scans = m.agents?.recent || [];  // A-13: la select dei cicli era sempre vuota
   S.events = m.events || [];
   renderConn(m.conn); renderHeaderMeta(); renderKpiStatics();
   if (S.tab === "overview") renderOverview();

@@ -207,3 +207,58 @@ def test_a08_reversal_con_stop_orfano_abortisce(monkeypatch):
         assert placed, "la chiusura market DEVE avvenire anche col cancel ko"
     finally:
         store.DB = old_db
+
+
+def test_a09_stale_posizione_aperta_da_altro_worker(monkeypatch):
+    """A-09: un altro worker apre la stessa coin DURANTE il grafo ->
+    fresh_it compare al re-read nel lock -> ordine SALTATO (no doppia)."""
+    old_db = _fresh_db()
+    try:
+        placed = []
+
+        class Ex:
+            def set_leverage(self, coin, lev):
+                raise AssertionError("non si deve arrivare alla leva")
+            def place_market(self, *a, **k):
+                placed.append(a)
+                raise AssertionError("place_market non deve essere chiamato")
+
+        pre = {"ctx": {"prevDayPx": 100.0, "funding": 0.0001,
+                       "openInterest": 1000.0, "dayNtlVlm": 1e6},
+               "mid": 100.0, "h1": _candles(30), "h4": _candles(30),
+               "d1": _candles(30), "trades": [], "fng": (50, "N"),
+               "heads": [], "ofi_z": 2.0}
+        g = {"decision": {"side": "long", "leverage": 2,
+                          "confidence": 0.9, "rationale": "t"},
+             "panel": {}, "debate": {}}
+
+        # altro worker apre la posizione DURANTE il grafo (side-effect del
+        # fake run_pipeline: il read iniziale di held_it ha visto vuoto)
+        def _pipeline(cfg_, coin_, blob_, micro=None):
+            store.intent_open("BTC", "long", 1.0, 100.0, 95.0, leverage=2)
+            return g
+
+        cfg = SimpleNamespace(wallet="w", signal_z_min=1.0, ws_collect_seconds=90,
+                              lev_cap=3, base_frac=0.10, min_notional=3000.0,
+                              min_trade_confidence=0.65, atr_stop_mult=2.0,
+                              daily_dd=-0.05, weekly_dd=-0.10)
+        c = SimpleNamespace(
+            clearinghouse_state=lambda w: {"assetPositions": []},
+            all_mids=lambda: {"BTC": 100.0},
+            candles_cached=lambda *a, **k: [],
+            asset_index=lambda coin: (0, {"szDecimals": 5}))
+        monkeypatch.setattr(L, "equity", lambda c, cfg: 100000.0)
+        monkeypatch.setattr(L, "registry",
+                            SimpleNamespace(max_leverage=lambda c, coin: 3))
+        monkeypatch.setattr(L.pipelines, "run_pipeline", _pipeline)
+        monkeypatch.setattr(L, "_touch_heartbeat", lambda: None)
+        monkeypatch.setattr(L, "_log_cycle", lambda **kw: None)
+        monkeypatch.setattr(L.scanner, "correlated_open_count",
+                            lambda *a, **k: 0)
+        res = L.run_cycle(cfg, c, Ex(), "BTC", pre=pre)
+        assert res["executed"] is False
+        assert "stale" in res["reason"]
+        assert not placed
+        assert len(store.intents_open()) == 1   # solo quella dell'"altro"
+    finally:
+        store.DB = old_db

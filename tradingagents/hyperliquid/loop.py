@@ -614,6 +614,7 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     # prezzo corrente. Upgrade: limit entry con slippage budget esplicito.
     mid = float(c.all_mids().get(coin) or mid)
     llm_side, rationale = gextra["llm_side"], gextra["rationale"]
+    closed_reversal = False                    # A-09: set dopo close reversal
     if held_it:
         rev = reversal_decision(held_it["side"], llm_side,
                                 g["decision"].get("confidence"))
@@ -629,6 +630,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
             f"(PnL ${pnl_est:+,.2f})")
         with _ORDER_LOCK:
             close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
+        closed_reversal = True  # A-09: la posizione era held: la sua
+        # assenza al re-read sotto e' ATTESA (l'abbiamo chiusa noi adesso)
         # A-08: prima di aprire l'OPPOSTO, il vecchio stop deve essere
         # CONFERMATO cancellato: orfano su posizione opposta = chiusura
         # silenziosa del trade nuovo al prezzo dello stop vecchio.
@@ -688,6 +691,27 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     plan = dict(plan, qty=qty_lot, notional=round(qty_lot * mid, 2))
     # ---- esecuzione + stop nativo + persistenza intento ----
     with _ORDER_LOCK:
+        # A-09 (audit): held_it e' una fotografia di ~10 min fa (pre-grafo):
+        # il monitor puo' aver chiuso TP/stop nel frattempo, o un altro
+        # worker aver aperto la stessa coin. Riletta FRESCA dentro il lock:
+        # se lo stato e' cambiato, l'ordine pianificato non ha piu' senso.
+        fresh_it = next((dict(i) for i in store.intents_open()
+                         if i["coin"] == coin), None)
+        if fresh_it is not None and not held_it:
+            log(f"[cycle] STALE_SKIP {coin}: posizione aperta da un altro "
+                f"worker durante il grafo - ordine saltato")
+            return done(False, "stale: posizione aperta durante il grafo",
+                        gextra)
+        if held_it and fresh_it is None and not closed_reversal:
+            log(f"[cycle] STALE_SKIP {coin}: posizione chiusa dal monitor "
+                f"durante il grafo - ordine saltato")
+            return done(False, "stale: posizione chiusa durante il grafo",
+                        gextra)
+        if held_it and fresh_it and held_it["side"] != fresh_it["side"]:
+            log(f"[cycle] STALE_SKIP {coin}: verso della posizione cambiato "
+                f"durante il grafo - ordine saltato")
+            return done(False, "stale: verso posizione cambiato durante il "
+                        "grafo", gextra)
         try:
             ex.set_leverage(coin, plan["leverage"])   # A-05: hard-fail
         except Exception as e:

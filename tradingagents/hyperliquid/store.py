@@ -32,11 +32,11 @@ CREATE TABLE IF NOT EXISTS intents (
   closed_ts TEXT,
   close_reason TEXT
 );
-CREATE TABLE IF NOT EXISTS llm_diagnostics (   -- T54: timeout/strike/abort/ok
+CREATE TABLE IF NOT EXISTS llm_diagnostics (   -- T54: timeout/strike/abort/ok/step
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL,              -- ISO8601 UTC
   symbol TEXT NOT NULL,
-  event_type TEXT NOT NULL,     -- 'timeout'|'abort'|'strike'|'ok'
+  event_type TEXT NOT NULL,     -- 'timeout'|'abort'|'strike'|'ok'|'step' (T54 r7)
   step_name TEXT,                -- NULL per eventi a livello grafo
   duration_s REAL,
   strikes INTEGER DEFAULT 0

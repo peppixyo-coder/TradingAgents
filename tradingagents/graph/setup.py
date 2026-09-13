@@ -51,15 +51,27 @@ STEP_NAMES = {
 
 
 def _timed(step: str, fn):
-    """Wrapper cronometro per un nodo LLM del grafo (T54 step timing)."""
+    """Wrapper cronometro per un nodo LLM del grafo (T54 step timing).
+
+    Oltre al GRAPH_STEP DEBUG, T54 r7 persiste la durata su llm_diagnostics
+    (step_name+duration_s): e' la fonte di slowest_steps nell'endpoint
+    /api/diagnostics/llm_timeouts. Best-effort: setup.py e' upstream, il bot
+    gira anche senza store/DB (CLI stock) - mai far crashare il nodo.
+    """
     @wraps(fn)
     def wrapper(state):
         t0 = time.monotonic()
         try:
             return fn(state)
         finally:
-            logger.debug("GRAPH_STEP | step=%s | elapsed=%.1fs",
-                         step, time.monotonic() - t0)
+            elapsed = time.monotonic() - t0
+            logger.debug("GRAPH_STEP | step=%s | elapsed=%.1fs", step, elapsed)
+            try:  # lazy: evita import circolare (store -> ... -> graph)
+                from tradingagents.hyperliquid import store
+                store.llm_diag(state.get("company_of_interest", "?"),
+                               "step", step, duration_s=elapsed)
+            except Exception:
+                pass
     return wrapper
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/

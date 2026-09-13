@@ -14,6 +14,7 @@ Decisioni T15/T16 ratificate:
 Run: python -m tradingagents.hyperliquid.loop [--once] [--no-preflight] [--close-all]
 """
 import asyncio
+import logging
 import json
 import math
 import os
@@ -875,6 +876,13 @@ def main(argv=None):
         for it in store.intents_open():
             close_position(c, cfg, ex, dict(it))
         return
+    # T54 r7: senza basicConfig il root logger resta a WARNING (nessun modulo
+    # configura logging) e GRAPH_STEP/GRAPH_TIMING (DEBUG/INFO) non arrivano
+    # MAI ai docker logs. INFO basta: GRAPH_STEP e' DEBUG - attivarlo con
+    # HL_LOG_LEVEL=DEBUG se serve tracciare lo slow step per-run.
+    logging.basicConfig(
+        level=os.getenv("HL_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s")
     log(f"[loop] universo dinamico (registry+screener) interval={interval}s "
         f"mode={cfg.trading_mode}")
     threading.Thread(target=_monitor_loop, args=(c, cfg, ex),

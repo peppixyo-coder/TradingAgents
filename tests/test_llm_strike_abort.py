@@ -142,3 +142,44 @@ def test_strike_niente_fallback_custom(monkeypatch):
     monkeypatch.setattr(pipelines.analysts, "run_graph", no_fallback)
     with pytest.raises(O.LLMStrikeError):
         pipelines.run_pipeline(None, "BTC", micro={})
+
+
+def test_timed_persiste_step_su_llm_diagnostics(tmp_path):
+    """T54 r7: il wrapper _timed scrive una riga 'step' su llm_diagnostics
+    (step_name+duration_s): e' la fonte di slowest_steps nell'endpoint."""
+    import os
+    from tradingagents.graph import setup as S
+    from tradingagents.hyperliquid import store
+
+    old = store.DB
+    store.DB = os.path.join(str(tmp_path), "t.db")
+    try:
+        store.init()
+        wrapped = S._timed("research_manager", lambda state: {"ok": 1})
+        out = wrapped({"company_of_interest": "xyz:BTC"})
+        assert out == {"ok": 1}
+        with store.connect() as conn:
+            row = conn.execute(
+                "SELECT symbol, event_type, step_name, duration_s "
+                "FROM llm_diagnostics").fetchone()
+        assert row["symbol"] == "xyz:BTC"
+        assert row["event_type"] == "step"
+        assert row["step_name"] == "research_manager"
+        assert row["duration_s"] >= 0
+    finally:
+        store.DB = old
+
+
+def test_timed_tollera_store_assente(monkeypatch):
+    """T54 r7: store che alza (es. DB assente, modulo rotto): il nodo
+    deve completare comunque - il timing non puo' uccidere il grafo."""
+    from tradingagents.graph import setup as S
+
+    def boom(*a, **k):
+        raise RuntimeError("no db")
+
+    monkeypatch.setattr(
+        "tradingagents.hyperliquid.store.llm_diag", boom)
+    wrapped = S._timed("trader_decision", lambda state: {"v": 2})
+    assert wrapped({"company_of_interest": "X"}) == {"v": 2}
+    # e il finally del wrapper: la durata e' comunque loggata (no exception)

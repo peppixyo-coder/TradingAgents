@@ -159,3 +159,51 @@ def test_a05_set_leverage_fallito_salta_trade(monkeypatch):
         assert not store.intents_open()
     finally:
         store.DB = old_db
+
+
+def test_a08_reversal_con_stop_orfano_abortisce(monkeypatch):
+    """A-08: reversal con cancel stop fallito -> posizione CHIUSA ma ordine
+    opposto NON piazzato (REVERSAL_ABORTED). L'orologio di verify usa sleep
+    mockato per non rallentare il test."""
+    import tradingagents.hyperliquid.loop as LL
+
+    old_db = _fresh_db()
+    try:
+        iid = store.intent_open("BTC", "long", 1.0, 100.0, 95.0, leverage=2)
+        store.intent_attach_stop(iid, 555)
+        monkeypatch.setattr(LL.time, "sleep", lambda s: None)
+
+        # book che risponde MA lo stop 555 resta sempre resting
+        monkeypatch.setattr(LL, "_resting_oids",
+                            lambda c, cfg: {"555"})
+        placed = []
+        ex = SimpleNamespace(
+            cancel_order=lambda coin, oid: {"status": "error"},
+            cancel_tp_orders=lambda coin, oids: [],
+            place_market=lambda *a, **k: placed.append(a) or
+                {"status": "filled", "avg_px": 100.0, "filled_sz": 1.0},
+        )
+        # posizione ancora viva sulla clearinghouse: close chiude, poi verify
+        c = SimpleNamespace(
+            all_mids=lambda: {"BTC": 100.0},
+            clearinghouse_state=lambda w: {"assetPositions": [
+                {"position": {"coin": "BTC", "szi": "1.0",
+                              "entryPx": "100.0"}}]},
+        )
+        cfg = SimpleNamespace(wallet="w")
+        LL.close_position(c, cfg, ex,
+                          {"id": iid, "coin": "BTC", "side": "long",
+                           "qty": 1.0, "remaining_size": 1.0,
+                           "entry_px": 100.0, "stop_px": 95.0,
+                           "stop_oid": 555},
+                          reason="signal-reversal")
+        # close_position chiude la posizione (market close) e archivia
+        assert not store.intents_open(), \
+            "l'intento deve essere archiviato dopo la chiusura market"
+        assert not LL._verify_order_cancelled(c, cfg, ex, "BTC", 555), \
+            "lo stop orfano resta resting: il verify DEVE fallire"
+        # il chiamante (run_cycle) su verify False salta l'apertura
+        # dell'opposto: verificato indirettamente - close comunque avvenuta
+        assert placed, "la chiusura market DEVE avvenire anche col cancel ko"
+    finally:
+        store.DB = old_db

@@ -235,12 +235,35 @@ def _cancel_resting_tps(ex, it, c=None, cfg=None):
                         r = ex.cancel_order(it["coin"], o["oid"])
                         if str(r.get("status", "")).lower().startswith("canceled"):
                             gone.append(o["oid"])
-                    except Exception:
-                        pass
+                    except Exception as e:   # A-10: visibile, non muto
+                        log(f"[TP] TP_CANCEL_FAIL {it['coin']} oid="
+                            f"{o.get('oid')}: {e}")
         except Exception as e:
             log(f"[TP] {it['coin']}: scan book per cancel fallito: {e}")
     if gone:
         log(f"[TP] {it['coin']}: cancel {len(gone)} ordini resting")
+
+def _verify_order_cancelled(c, cfg, ex, coin, oid, max_retries=3):
+    """A-08 (audit): conferma che l'oid non sia piu' resting, con retry.
+    Usato sul path reversal: uno stop orfano reduce-only su una posizione
+    NUOVA opposta viene clampato da HyPaper e puo' chiudere il trade fresco
+    al prezzo dello stop vecchio."""
+    for attempt in range(1, max_retries + 1):
+        resting = _resting_oids(c, cfg)
+        if resting is None:
+            log(f"[TP] verify-cancel {coin} oid={oid}: endpoint giu' "
+                f"({attempt}/{max_retries})")
+        elif str(oid) not in resting:
+            return True
+        else:
+            log(f"[TP] verify-cancel {coin}: oid={oid} ancora resting "
+                f"({attempt}/{max_retries}), retry cancel")
+            try:
+                ex.cancel_order(coin, oid)
+            except Exception as e:
+                log(f"[TP] TP_CANCEL_FAIL {coin} oid={oid}: {e}")
+        time.sleep(2)
+    return False
 
 
 def move_stop_to_breakeven(c, cfg, ex, it):
@@ -606,6 +629,16 @@ def run_cycle(cfg, c, ex, coin, pre=None):
             f"(PnL ${pnl_est:+,.2f})")
         with _ORDER_LOCK:
             close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
+        # A-08: prima di aprire l'OPPOSTO, il vecchio stop deve essere
+        # CONFERMATO cancellato: orfano su posizione opposta = chiusura
+        # silenziosa del trade nuovo al prezzo dello stop vecchio.
+        if held_it.get("stop_oid") and not _verify_order_cancelled(
+                c, cfg, ex, coin, held_it["stop_oid"]):
+            log(f"[cycle] REVERSAL_ABORTED {coin}: stop oid="
+                f"{held_it['stop_oid']} ancora resting dopo i retry - "
+                f"posizione chiusa, NON apro l'opposto")
+            return done(False, "reversal abortito: stop vecchio non "
+                        "cancellato (verificare book)", gextra)
     elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:

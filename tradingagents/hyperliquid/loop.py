@@ -235,12 +235,35 @@ def _cancel_resting_tps(ex, it, c=None, cfg=None):
                         r = ex.cancel_order(it["coin"], o["oid"])
                         if str(r.get("status", "")).lower().startswith("canceled"):
                             gone.append(o["oid"])
-                    except Exception:
-                        pass
+                    except Exception as e:   # A-10: visibile, non muto
+                        log(f"[TP] TP_CANCEL_FAIL {it['coin']} oid="
+                            f"{o.get('oid')}: {e}")
         except Exception as e:
             log(f"[TP] {it['coin']}: scan book per cancel fallito: {e}")
     if gone:
         log(f"[TP] {it['coin']}: cancel {len(gone)} ordini resting")
+
+def _verify_order_cancelled(c, cfg, ex, coin, oid, max_retries=3):
+    """A-08 (audit): conferma che l'oid non sia piu' resting, con retry.
+    Usato sul path reversal: uno stop orfano reduce-only su una posizione
+    NUOVA opposta viene clampato da HyPaper e puo' chiudere il trade fresco
+    al prezzo dello stop vecchio."""
+    for attempt in range(1, max_retries + 1):
+        resting = _resting_oids(c, cfg)
+        if resting is None:
+            log(f"[TP] verify-cancel {coin} oid={oid}: endpoint giu' "
+                f"({attempt}/{max_retries})")
+        elif str(oid) not in resting:
+            return True
+        else:
+            log(f"[TP] verify-cancel {coin}: oid={oid} ancora resting "
+                f"({attempt}/{max_retries}), retry cancel")
+            try:
+                ex.cancel_order(coin, oid)
+            except Exception as e:
+                log(f"[TP] TP_CANCEL_FAIL {coin} oid={oid}: {e}")
+        time.sleep(2)
+    return False
 
 
 def move_stop_to_breakeven(c, cfg, ex, it):
@@ -292,6 +315,15 @@ def maintain_tps(c, cfg, ex):
     live = {p["position"]["coin"]: abs(float(p["position"]["szi"]))
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
     resting = _resting_oids(c, cfg)
+    if resting is None:
+        # A-02 (audit): fail-closed. Senza l'insieme degli oid resting la
+        # membership-guard e' spenta e un QUAISI restringimento di posizione
+        # (drift/esterno) verrebbe marcato come fill TP -> falso TP1, stop a BE
+        # fantasma, remaining/PnL corrotti per sempre. Rimanda al prossimo
+        # pass (60s) invece di tirare a indovinare.
+        log(f"[TP] ATTENZIONE frontendOpenOrders non disponibile: "
+            f"rilevamento fill TP rimandato al prossimo pass")
+        return 0, 0
     fills = be_moves = 0
     for _row in store.intents_open():
         it = dict(_row)
@@ -582,6 +614,7 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     # prezzo corrente. Upgrade: limit entry con slippage budget esplicito.
     mid = float(c.all_mids().get(coin) or mid)
     llm_side, rationale = gextra["llm_side"], gextra["rationale"]
+    closed_reversal = False                    # A-09: set dopo close reversal
     if held_it:
         rev = reversal_decision(held_it["side"], llm_side,
                                 g["decision"].get("confidence"))
@@ -597,6 +630,18 @@ def run_cycle(cfg, c, ex, coin, pre=None):
             f"(PnL ${pnl_est:+,.2f})")
         with _ORDER_LOCK:
             close_position(c, cfg, ex, dict(held_it), reason="signal-reversal")
+        closed_reversal = True  # A-09: la posizione era held: la sua
+        # assenza al re-read sotto e' ATTESA (l'abbiamo chiusa noi adesso)
+        # A-08: prima di aprire l'OPPOSTO, il vecchio stop deve essere
+        # CONFERMATO cancellato: orfano su posizione opposta = chiusura
+        # silenziosa del trade nuovo al prezzo dello stop vecchio.
+        if held_it.get("stop_oid") and not _verify_order_cancelled(
+                c, cfg, ex, coin, held_it["stop_oid"]):
+            log(f"[cycle] REVERSAL_ABORTED {coin}: stop oid="
+                f"{held_it['stop_oid']} ancora resting dopo i retry - "
+                f"posizione chiusa, NON apro l'opposto")
+            return done(False, "reversal abortito: stop vecchio non "
+                        "cancellato (verificare book)", gextra)
     elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
@@ -646,7 +691,35 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     plan = dict(plan, qty=qty_lot, notional=round(qty_lot * mid, 2))
     # ---- esecuzione + stop nativo + persistenza intento ----
     with _ORDER_LOCK:
-        ex.set_leverage(coin, plan["leverage"])
+        # A-09 (audit): held_it e' una fotografia di ~10 min fa (pre-grafo):
+        # il monitor puo' aver chiuso TP/stop nel frattempo, o un altro
+        # worker aver aperto la stessa coin. Riletta FRESCA dentro il lock:
+        # se lo stato e' cambiato, l'ordine pianificato non ha piu' senso.
+        fresh_it = next((dict(i) for i in store.intents_open()
+                         if i["coin"] == coin), None)
+        if fresh_it is not None and not held_it:
+            log(f"[cycle] STALE_SKIP {coin}: posizione aperta da un altro "
+                f"worker durante il grafo - ordine saltato")
+            return done(False, "stale: posizione aperta durante il grafo",
+                        gextra)
+        if held_it and fresh_it is None and not closed_reversal:
+            log(f"[cycle] STALE_SKIP {coin}: posizione chiusa dal monitor "
+                f"durante il grafo - ordine saltato")
+            return done(False, "stale: posizione chiusa durante il grafo",
+                        gextra)
+        if held_it and fresh_it and held_it["side"] != fresh_it["side"]:
+            log(f"[cycle] STALE_SKIP {coin}: verso della posizione cambiato "
+                f"durante il grafo - ordine saltato")
+            return done(False, "stale: verso posizione cambiato durante il "
+                        "grafo", gextra)
+        try:
+            ex.set_leverage(coin, plan["leverage"])   # A-05: hard-fail
+        except Exception as e:
+            # A-05 (audit): leva non applicata = posizione a 20x di default:
+            # SKIP del trade, non proseguiamo con math del margine divergente.
+            log(f"[Risk] ATTENZIONE {coin}: set_leverage {plan['leverage']}x "
+                f"fallito ({e!r}) - TRADE SALTATO")
+            return done(False, f"set_leverage fallito: {e!r}", {"plan": plan})
         fill = ex.place_market(coin, llm_side, plan["qty"], mid)
         if fill["status"] != "filled":
             return done(False, f"fill non eseguito: {fill['status']} {fill.get('error', '')}",

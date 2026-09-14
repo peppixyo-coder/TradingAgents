@@ -33,7 +33,8 @@ TS_FMT = "%Y-%m-%dT%H:%M:%S%z"
 # WS dello STESSO mirror usato dal bot (HyPaper): mainnet non ha i coin HIP-3
 HL_WS_URL = os.environ.get(
     "HYPAPER_URL", "http://localhost:3000").replace("http", "ws") + "/ws"
-TAKER_FEE = 0.00035  # stima: entrambe le gambe market/IOC
+TAKER_FEE = 0.00035  # IOC/trigger legs (entry, stop-out): taker rate HyPaper
+MAKER_FEE = 0.0001   # A-06: TP limit resting fills = maker (order-matcher.ts:61)
 _CLOSE_KIND = {"stop-loss": "STOP", "trailing-stop": "TRAILING",
                "signal-reversal": "REVERSAL", "chiusura-manuale": "MANUAL",
                "position-gone": "STOP", "take-profit-full": "TP_FULL",
@@ -323,8 +324,9 @@ class Agg:
 
         tot_pnl = sum(pnls)
         return {
+            "realizedTot": round(tot_pnl, 2),   # A-30: era calcolato ma mai spedito
             "realizedToday": realized_today,
-            "feesTot": sum(t["fee"] or 0 for t in closed),
+            "feesTot": round(sum(t["fee"] or 0 for t in closed), 2),  # restore r5
             "equity": eq_now, "seed": self.cfg.paper_seed_balance,
             "dayStart": self.day_start_eq,
             "dayPnl": eq_now - self.day_start_eq,
@@ -490,18 +492,27 @@ class Agg:
             if xp is None and tcs:
                 xp = self.exit_px(it["coin"], tcs)
                 pnl = round((xp - entry) * qty * sgn, 2) if xp else None
-            # ponytail: fee stimata taker (0.035%) sulle gambe reali: ingresso
-            # su qty, uscita su tagli TP + residuo. HyPaper non espone i fill
-            # (userFills rotto). Upgrade: sink Postgres HyPaper.
-            fee = round((entry * qty
-                         + sum(float(it[f"tp{n}_px"]) * float(it[f"tp{n}_size"] or 0)
-                               for n in hit)
-                         + (xp * rem if xp else 0)) * TAKER_FEE, 4) if xp else None
+            # A-06 (audit): split taker/maker. HyPaper: IOC/trigger = taker
+            # (0.035%), i limit resting che fillano dal book = maker (0.01%)
+            # (worker/order-matcher.ts:60-61). L'entry e' IOC, i TP fillati
+            # sono maker, lo stop/mercato residuo e' taker.
+            # A-07: pnl NETTO delle fee (equity HyPaper e' gia' netta) —
+            # esposto pnlGross per trasparenza.
+            fee = None
+            if xp:
+                fee_tp = sum(float(it[f"tp{n}_px"]) * float(it[f"tp{n}_size"] or 0)
+                             for n in hit) * MAKER_FEE
+                fee = round(entry * qty * TAKER_FEE + fee_tp
+                            + xp * rem * TAKER_FEE, 4)
+            pnl_gross = pnl
+            if pnl is not None and fee is not None:
+                pnl = round(pnl - fee, 2)
             out.append({
                 "id": it["id"], "coin": it["coin"], "side": it["side"],
                 "qty": qty, "notional": entry * qty,
                 "entry": entry, "exit": xp, "stop": it["stop_px"],
-                "pnl": pnl, "fee": fee, "adm": bool(it.get("is_administrative")),
+                "pnl": pnl, "pnlGross": pnl_gross, "fee": fee,
+                "adm": bool(it.get("is_administrative")),
                 "lev": it["leverage"], "confidence": rec.get("confidence"),
                 "rationale": rec.get("rationale"), "panel": rec.get("panel"),
                 "debate": rec.get("debate"),
@@ -609,7 +620,8 @@ API_KEY = os.getenv("DASHBOARD_API_KEY", "")
 @app.middleware("http")
 async def api_key_guard(request: Request, call_next):
     if API_KEY and request.url.path.startswith("/api") \
-            and request.headers.get("X-API-Key") != API_KEY:
+            and request.headers.get("X-API-Key") != API_KEY \
+            and request.query_params.get("key") != API_KEY:
         return PlainTextResponse("unauthorized", status_code=401)
     return await call_next(request)
 
@@ -829,6 +841,19 @@ async def startup():
 import faulthandler
 if hasattr(signal, "SIGUSR1"):  # POSIX only; Windows import altrimenti rompe i test
     faulthandler.register(signal.SIGUSR1)
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    """A-15: serve la SPA con il meta api-key iniettato, cosi' il fetch
+    della UI porta l'header X-API-Key richiesto dalla middleware senza
+    hardcodare la chiave nel JS (StaticFiles non puo' iniettarla)."""
+    with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    if API_KEY:
+        html = html.replace("<head>",
+                            f'<head><meta name="api-key" content="{API_KEY}">')
+    return Response(html, media_type="text/html")
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

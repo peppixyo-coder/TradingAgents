@@ -75,20 +75,30 @@ def _intent(side="long", qty=1.0, entry=100.0, stop=95.0, stop_oid=11,
     return iid
 
 
-def _run(live_szi, **kw):
+def _run(live_szi, n_filled=0, resting=None, **kw):
+    """n_filled: quanti TP sono gia' consumati (assenti dal book). Il test
+    li dimostra con la posizione ridotta. resting esplicito overridea (A-02)."""
     iid = _intent(**kw)
     ex = FakeEx()
-    fills, be = maintain_tps(FakeC({"BTC": live_szi}), Cfg, ex)
+    if resting is None:
+        resting = {str(100 + n) for n in (1, 2, 3) if n > n_filled}
+    import tradingagents.hyperliquid.loop as L
+    orig = L._resting_oids
+    L._resting_oids = lambda c, cfg: resting
+    try:
+        fills, be = maintain_tps(FakeC({"BTC": live_szi}), Cfg, ex)
+    finally:
+        L._resting_oids = orig
     it = dict(next(r for r in store.intents_open() if r["id"] == iid))
     return it, ex, fills, be
-
 
 # ---------- fill detection ----------
 
 def test_long_tp1_fill_porta_stop_a_breakeven():
     old = _fresh_db()
     try:
-        it, ex, fills, be = _run(0.6)          # 1.0 -> 0.6: TP1 (0.4) filled
+        # 1.0 -> 0.6: TP1 (0.4) filled, oid 101 consumato e assente dal book
+        it, ex, fills, be = _run(0.6, n_filled=1)
         assert fills == 1 and be == 1
         assert int(it["tp1_filled"]) == 1 and not int(it["tp2_filled"])
         assert abs(it["remaining_size"] - 0.6) < 1e-9
@@ -101,7 +111,7 @@ def test_long_tp1_fill_porta_stop_a_breakeven():
 def test_gap_multi_livello_stessa_passata():
     old = _fresh_db()
     try:
-        it, ex, fills, be = _run(0.3)          # salto TP1+TP2 sulla stessa candela
+        it, ex, fills, be = _run(0.3, n_filled=2)  # TP1+TP2 consumati dal book
         assert fills == 2 and be == 1          # BE solo una volta (dopo TP1)
         assert int(it["tp1_filled"]) and int(it["tp2_filled"])
         assert abs(it["remaining_size"] - 0.3) < 1e-9
@@ -122,7 +132,7 @@ def test_short_specchio():
     old = _fresh_db()
     try:
         it, _, fills, be = _run(-0.6, side="short", entry=100.0, stop=105.0,
-                                tps=(95.0, 90.0, 85.0))
+                                tps=(95.0, 90.0, 85.0), n_filled=1)
         assert fills == 1 and be == 1
         assert int(it["tp1_filled"]) == 1
         assert it["stop_px"] == 100.0          # BE anche sullo short
@@ -162,5 +172,26 @@ def test_close_reason_partial_tp_roundtrip():
                 "SELECT * FROM intents WHERE id=?", (iid,)).fetchone())
         assert row["status"] != "open" and row["close_reason"] == "partial-tp-stop"
         assert int(row["tp1_filled"]) == 1 and abs(row["remaining_size"] - 0.6) < 1e-9
+    finally:
+        store.DB = old
+
+
+def test_a02_resting_none_fail_closed():
+    """A-02: frontendOpenOrders giu' (resting None) -> NESSUN TP marcato,
+    remaining_size intatto, nessun BE: rilevamento rimandato al prossimo pass."""
+    old = _fresh_db()
+    try:
+        iid = _intent()
+        import tradingagents.hyperliquid.loop as L
+        orig = L._resting_oids
+        L._resting_oids = lambda c, cfg: None
+        try:
+            fills, be = maintain_tps(FakeC({"BTC": 0.6}), Cfg, FakeEx())
+        finally:
+            L._resting_oids = orig
+        row = dict(next(r for r in store.intents_open() if r["id"] == iid))
+        assert fills == 0 and be == 0
+        assert not int(row["tp1_filled"]) and not int(row["tp3_filled"])
+        assert abs(row["remaining_size"] - 1.0) < 1e-9   # invariato
     finally:
         store.DB = old

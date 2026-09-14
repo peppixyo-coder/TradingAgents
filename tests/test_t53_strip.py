@@ -39,21 +39,24 @@ def test_routes_detail(tmp_path):
     agg.last_kpis = {}
     server.agg = agg
     from fastapi.testclient import TestClient
+    hdrs = {"X-API-Key": server.API_KEY} if server.API_KEY else {}
     with TestClient(server.app) as cli:
-        r = cli.get("/api/trades")
+        r = cli.get("/api/trades", headers=hdrs)
         assert r.status_code == 200
         tid = r.json()[0]["id"]
         assert all("panel" not in t and "debate" not in t for t in r.json())
         # detail completo on-demand
-        r = cli.get(f"/api/trade/{tid}")
+        r = cli.get(f"/api/trade/{tid}", headers=hdrs)
         assert r.status_code == 200 and r.json()["panel"] == "PANEL"
         assert r.json()["debate"] == "DEBATE"
-        r = cli.get("/api/trade/999")
+        r = cli.get("/api/trade/999", headers=hdrs)
         assert r.status_code == 404
         # scan: record completo, salta stage
-        r = cli.get("/api/scan", params={"ts": "2026-09-12T10:00:00+0000", "coin": "DOGE"})
+        r = cli.get("/api/scan", params={"ts": "2026-09-12T10:00:00+0000",
+                                         "coin": "DOGE"}, headers=hdrs)
         assert r.status_code == 200 and r.json()["panel"] == "PANEL"
-        r = cli.get("/api/scan", params={"ts": "2026-09-12T09:00:00+0000", "coin": "DOGE"})
+        r = cli.get("/api/scan", params={"ts": "2026-09-12T09:00:00+0000",
+                                         "coin": "DOGE"}, headers=hdrs)
         assert r.status_code == 404
 
 

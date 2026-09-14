@@ -35,8 +35,10 @@ const hm = tsStr => { const t = typeof tsStr === "number" ? tsStr : Date.parse(t
 let ws, wsTimer;
 function wsConnect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const key = new URLSearchParams(location.search).get("key");
-  ws = new WebSocket(`${proto}://${location.host}/ws${key ? "?key=" + key : ""}`);
+  // T55: la chiave viene dal meta tag iniettato dal server (API_KEY, top-level);
+  // il ?key= nell'URL della pagina resta override opzionale.
+  const key = new URLSearchParams(location.search).get("key") || API_KEY;
+  ws = new WebSocket(`${proto}://${location.host}/ws${key ? "?key=" + encodeURIComponent(key) : ""}`);
   ws.onopen = () => $("#reconnect").classList.remove("on");
   ws.onclose = () => { $("#reconnect").classList.add("on");
     wsTimer = setTimeout(wsConnect, 2000); };

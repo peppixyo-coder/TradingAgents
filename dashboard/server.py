@@ -326,6 +326,7 @@ class Agg:
         return {
             "realizedTot": round(tot_pnl, 2),   # A-30: era calcolato ma mai spedito
             "realizedToday": realized_today,
+            "feesTot": round(sum(t["fee"] or 0 for t in closed), 2),  # restore r5
             "equity": eq_now, "seed": self.cfg.paper_seed_balance,
             "dayStart": self.day_start_eq,
             "dayPnl": eq_now - self.day_start_eq,

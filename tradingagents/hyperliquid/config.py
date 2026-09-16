@@ -28,8 +28,8 @@ class HLConfig:
     weekly_dd: float = -0.10           # DD settimanale -> stop 24h (loop concern)
     min_notional: float = 3000.0      # T44: sotto -> skip, fee relative troppe alte
     atr_stop_mult: float = 2.0         # distanza stop = 2 x ATR(14, 1h)
-    signal_z_min: float = 1.0          # soglia entrata |OFI_z|
-    min_trade_confidence: float = 0.65  # T44: confidenza PM minima per un ingresso
+    signal_z_min: float = 1.5          # soglia entrata |OFI_z|
+    min_trade_confidence: float = 0.75  # T44: confidenza PM minima per un ingresso
 
 
 def load() -> HLConfig:

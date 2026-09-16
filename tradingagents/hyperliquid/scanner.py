@@ -157,16 +157,6 @@ def triggers(rows, z_min, max_n=3, d1_map=None, log_fn=None):
 
     hit = [r for r in rows if abs(r["ofi_z"]) >= z_min and r["conviction"] > 0]
     hit.sort(key=lambda r: -abs(r["ofi_z"]))
-    if d1_map is None:
-        return hit[:max_n]
-    passed = []
-    for h in hit:
-        side = 1 if h["ofi_z"] > 0 else -1
-        name = "LONG" if side > 0 else "SHORT"
-        if ema20_daily_gate(side, [x["c"] for x in d1_map.get(h["coin"]) or []], h["mid"]):
-            passed.append(h)
-        else:
-            pos = "sotto" if side > 0 else "sopra"
-            say(f"[Scanner] {h['coin']} {name} scartato: prezzo {pos} "
-                f"EMA20 daily (controtendenza)")
-    return passed[:max_n]
+    # T57: directional eligibility is decided after the LLM using the
+    # multi-indicator trend gate; do not discard counter-trend candidates here.
+    return hit[:max_n]

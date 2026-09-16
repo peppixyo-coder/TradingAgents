@@ -4,10 +4,11 @@ services:
     env_file:
       - .env
     environment:
-      HL_ALLOW_SHORT: ${HL_ALLOW_SHORT:-true}
       HL_ASSET_BLACKLIST: ${HL_ASSET_BLACKLIST:-}
       OFI_Z_THRESHOLD: ${OFI_Z_THRESHOLD:-1.5}
       MIN_TRADE_CONFIDENCE: ${MIN_TRADE_CONFIDENCE:-0.75}
+      CONTRARIAN_CONFIDENCE: ${CONTRARIAN_CONFIDENCE:-0.85}
+      RANGING_CONFIDENCE_BOOST: ${RANGING_CONFIDENCE_BOOST:-0.05}
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
     extra_hosts:

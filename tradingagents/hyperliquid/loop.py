@@ -25,7 +25,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 from openai import OpenAIError  # T42: skip senza cooldown se il provider e' giu'
 
-from . import analysts, pipelines, registry, risk, scanner, screener, signal, store
+from . import analysts, pipelines, registry, risk, scanner, screener, signal, store, trend
 from .config import load
 from .data import HyPaperClient, collect_trades_multi, fng, rss_headlines
 from .executor import HyperliquidExecutor
@@ -559,12 +559,13 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     if conv == 0:
         return done(False, f"|OFI_z|={abs(z):.2f} < soglia {cfg.signal_z_min}")
     quant_side = "long" if z > 0 else "short"
+    trend_info = trend.detect_trend(d1)
+    log(f"TREND | {coin} | trend={trend_info['trend']} score={trend_info['score']} | "
+        f"ema20={trend_info['ema20']:.4f} ema50={trend_info['ema50']:.4f} | "
+        f"close={trend_info['close']:.4f}")
     if coin in cfg.asset_blacklist:
         log(f"[filter] BLACKLISTED | {coin} | asset in HL_ASSET_BLACKLIST")
         return done(False, f"BLACKLISTED_ASSET {coin}")
-    if quant_side == "short" and not cfg.allow_short:
-        log(f"[filter] SHORT_DISABLED | {coin} | segnale short scartato (HL_ALLOW_SHORT=false)")
-        return done(False, "SHORT_DISABLED")
     if held_it and held_it["side"] == quant_side:
         return {"coin": coin, "mid": mid, "ofi_z": round(z, 3), "conviction": conv,
                 "executed": False, "reason": "posizione gia' aperta (stesso verso)"}
@@ -655,15 +656,16 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     lev_choice = g["decision"].get("leverage")
     if isinstance(lev_choice, bool) or not isinstance(lev_choice, (int, float)):
         return done(False, "NO_LEVERAGE: il PM non ha scelto la leva", gextra)
-    # T44: solo ingressi con confidenza PM sufficiente (low-conviction =
-    # fee drag). Il path reversal ha gia' il suo gate (REVERSAL_CONF_MIN).
     try:
         conf_pm = float(g["decision"].get("confidence") or 0)
     except (TypeError, ValueError):
         conf_pm = 0.0
-    if conf_pm < cfg.min_trade_confidence:
-        return done(False, f"PM conf {conf_pm:.2f} < {cfg.min_trade_confidence}",
-                    gextra)
+    min_conf = trend.confidence_floor(cfg, trend_info, llm_side)
+    if conf_pm < min_conf:
+        log(f"TREND_VETO | {coin} | trend={trend_info['trend']} score={trend_info['score']} | "
+            f"side={llm_side} | conf={conf_pm:.2f} < {min_conf:.2f}")
+        return done(False, f"TREND_VETO conf {conf_pm:.2f} < {min_conf:.2f}",
+                    {"trend": trend_info, "min_conf": min_conf, **gextra})
 
     # ---- rischio ----
     vetoes = risk.check_dd_veto(cfg, eq)
@@ -734,7 +736,9 @@ def run_cycle(cfg, c, ex, coin, pre=None):
 
         intent_id = store.intent_open(coin, llm_side, fill["filled_sz"],
                                       entry_px, stop_px, fill.get("oid"),
-                                      plan["leverage"], ofi_z=z, confidence=conf_pm)
+                                      plan["leverage"], ofi_z=z, confidence=conf_pm,
+                                      trend_direction=trend_info["trend"],
+                                      trend_score=trend_info["score"])
         stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
                                 "qty": fill["filled_sz"],
                                 "remaining_size": fill["filled_sz"], "stop_px": stop_px})
@@ -990,6 +994,10 @@ def main(argv=None):
             rows = scanner.scan(passed, h1_map, d1_map, flow)
             scanner.save_ctx_snapshot(rows)
             scanner.ctx_deltas(rows, prev)
+            for r in rows:
+                ti = trend.detect_trend(d1_map.get(r["coin"]) or [])
+                log(f"TREND | {r['coin']} | trend={ti['trend']} score={ti['score']} | "
+                    f"ema20={ti['ema20']:.4f} ema50={ti['ema50']:.4f} | close={ti['close']:.4f}")
             for r in rows:
                 log(f"[scan] {r['coin']:8s} px={r['mid']:,.4g} z={r['ofi_z']:+.2f} "
                     f"rsi={r['rsi']} macd_h={r['macd_h']} vol_x={r['vol_x']} "

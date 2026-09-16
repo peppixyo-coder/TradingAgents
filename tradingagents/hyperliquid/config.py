@@ -29,8 +29,9 @@ class HLConfig:
     min_notional: float = 3000.0      # T44: sotto -> skip, fee relative troppe alte
     atr_stop_mult: float = 2.0         # distanza stop = 2 x ATR(14, 1h)
     signal_z_min: float = 1.5          # soglia entrata |OFI_z|
-    min_trade_confidence: float = 0.75  # T44: confidenza PM minima per un ingresso
-    allow_short: bool = True
+    min_trade_confidence: float = 0.75  # soglia base con-trend
+    contrarian_confidence: float = 0.85
+    ranging_confidence_boost: float = 0.05
     asset_blacklist: tuple[str, ...] = ()
 
 
@@ -57,6 +58,7 @@ def load() -> HLConfig:
         min_notional=float(os.getenv("MIN_NOTIONAL_USD", "3000")),
         signal_z_min=float(os.getenv("OFI_Z_THRESHOLD", "1.5")),
         min_trade_confidence=float(os.getenv("MIN_TRADE_CONFIDENCE", "0.75")),
-        allow_short=os.getenv("HL_ALLOW_SHORT", "true").strip().lower() not in {"0", "false", "no", "off"},
+        contrarian_confidence=float(os.getenv("CONTRARIAN_CONFIDENCE", "0.85")),
+        ranging_confidence_boost=float(os.getenv("RANGING_CONFIDENCE_BOOST", "0.05")),
         asset_blacklist=tuple(x.strip() for x in os.getenv("HL_ASSET_BLACKLIST", "").split(",") if x.strip()),
     )

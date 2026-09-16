@@ -75,6 +75,8 @@ def init():
                 ("remaining_size", "REAL"),
                 ("ofi_z", "REAL"),
                 ("confidence", "REAL"),
+                ("trend_direction", "TEXT"),
+                ("trend_score", "INTEGER"),
                 ("tp1_px", "REAL"), ("tp1_size", "REAL"),
                 ("tp1_oid", "INTEGER"), ("tp1_filled", "INTEGER NOT NULL DEFAULT 0"),
                 ("tp2_px", "REAL"), ("tp2_size", "REAL"),
@@ -131,13 +133,15 @@ def kv_set(k, v):
 
 
 def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None, leverage=None,
-                ofi_z=None, confidence=None):
+                ofi_z=None, confidence=None, trend_direction=None, trend_score=None):
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid,leverage,"
-            "original_size,remaining_size,ofi_z,confidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "original_size,remaining_size,ofi_z,confidence,trend_direction,trend_score) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.strftime("%Y-%m-%dT%H:%M:%S%z"), coin, side, qty,
-             entry_px, stop_px, fill_oid, leverage, qty, qty, ofi_z, confidence))
+             entry_px, stop_px, fill_oid, leverage, qty, qty, ofi_z, confidence,
+             trend_direction, trend_score))
         return cur.lastrowid
 
 

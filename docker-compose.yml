@@ -10,6 +10,7 @@ services:
       CONTRARIAN_CONFIDENCE: ${CONTRARIAN_CONFIDENCE:-0.85}
       RANGING_CONFIDENCE_BOOST: ${RANGING_CONFIDENCE_BOOST:-0.05}
     volumes:
+      - ./state:/app/state
       - tradingagents_data:/home/appuser/.tradingagents
     extra_hosts:
       - "host.docker.internal:host-gateway"

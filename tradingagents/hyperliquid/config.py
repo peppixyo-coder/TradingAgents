@@ -46,6 +46,7 @@ def load() -> HLConfig:
             "TRADINGAGENTS_LLM_BACKEND_URL",
             os.getenv("OPENAI_BASE_URL", "http://localhost:20128/v1"),
         ).rstrip("/"),
+        api_key=os.getenv("OPENAI_API_KEY", ""),
         quick_model=os.getenv("UPSTREAM_LLM_MODEL", "Combo-2"),
         deep_model=os.getenv("CUSTOM_LLM_MODEL", "Combo-1"),
         trading_mode=os.getenv("TRADING_MODE", "paper"),

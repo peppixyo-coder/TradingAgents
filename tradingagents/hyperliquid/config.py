@@ -30,6 +30,8 @@ class HLConfig:
     atr_stop_mult: float = 2.0         # distanza stop = 2 x ATR(14, 1h)
     signal_z_min: float = 1.5          # soglia entrata |OFI_z|
     min_trade_confidence: float = 0.75  # T44: confidenza PM minima per un ingresso
+    allow_short: bool = True
+    asset_blacklist: tuple[str, ...] = ()
 
 
 def load() -> HLConfig:
@@ -53,5 +55,8 @@ def load() -> HLConfig:
         paper_seed_balance=float(os.getenv("PAPER_SEED_BALANCE", "10000")),
         ws_collect_seconds=int(os.getenv("HL_WS_COLLECT_SECONDS", "90")),
         min_notional=float(os.getenv("MIN_NOTIONAL_USD", "3000")),
-        min_trade_confidence=float(os.getenv("MIN_TRADE_CONFIDENCE", "0.65")),
+        signal_z_min=float(os.getenv("OFI_Z_THRESHOLD", "1.5")),
+        min_trade_confidence=float(os.getenv("MIN_TRADE_CONFIDENCE", "0.75")),
+        allow_short=os.getenv("HL_ALLOW_SHORT", "true").strip().lower() not in {"0", "false", "no", "off"},
+        asset_blacklist=tuple(x.strip() for x in os.getenv("HL_ASSET_BLACKLIST", "").split(",") if x.strip()),
     )

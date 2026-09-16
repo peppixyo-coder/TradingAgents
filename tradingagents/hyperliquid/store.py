@@ -71,8 +71,10 @@ def init():
             pass
         cols = (("peak_price", "REAL"),                  # massimo favorevole toccato
                 ("trailing_active", "INTEGER NOT NULL DEFAULT 0"),
-                ("original_size", "REAL"),               # size iniziale completa
-                ("remaining_size", "REAL"),              # size residua dopo TP parziali
+                ("original_size", "REAL"),
+                ("remaining_size", "REAL"),
+                ("ofi_z", "REAL"),
+                ("confidence", "REAL"),
                 ("tp1_px", "REAL"), ("tp1_size", "REAL"),
                 ("tp1_oid", "INTEGER"), ("tp1_filled", "INTEGER NOT NULL DEFAULT 0"),
                 ("tp2_px", "REAL"), ("tp2_size", "REAL"),
@@ -128,13 +130,14 @@ def kv_set(k, v):
                      "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
 
 
-def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None, leverage=None):
+def intent_open(coin, side, qty, entry_px, stop_px, fill_oid=None, leverage=None,
+                ofi_z=None, confidence=None):
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO intents(ts,coin,side,qty,entry_px,stop_px,fill_oid,leverage,"
-            "original_size,remaining_size) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "original_size,remaining_size,ofi_z,confidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.strftime("%Y-%m-%dT%H:%M:%S%z"), coin, side, qty,
-             entry_px, stop_px, fill_oid, leverage, qty, qty))
+             entry_px, stop_px, fill_oid, leverage, qty, qty, ofi_z, confidence))
         return cur.lastrowid
 
 

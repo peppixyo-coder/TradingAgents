@@ -559,6 +559,12 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     if conv == 0:
         return done(False, f"|OFI_z|={abs(z):.2f} < soglia {cfg.signal_z_min}")
     quant_side = "long" if z > 0 else "short"
+    if coin in cfg.asset_blacklist:
+        log(f"[filter] BLACKLISTED | {coin} | asset in HL_ASSET_BLACKLIST")
+        return done(False, f"BLACKLISTED_ASSET {coin}")
+    if quant_side == "short" and not cfg.allow_short:
+        log(f"[filter] SHORT_DISABLED | {coin} | segnale short scartato (HL_ALLOW_SHORT=false)")
+        return done(False, "SHORT_DISABLED")
     if held_it and held_it["side"] == quant_side:
         return {"coin": coin, "mid": mid, "ofi_z": round(z, 3), "conviction": conv,
                 "executed": False, "reason": "posizione gia' aperta (stesso verso)"}
@@ -728,7 +734,7 @@ def run_cycle(cfg, c, ex, coin, pre=None):
 
         intent_id = store.intent_open(coin, llm_side, fill["filled_sz"],
                                       entry_px, stop_px, fill.get("oid"),
-                                      plan["leverage"])
+                                      plan["leverage"], ofi_z=z, confidence=conf_pm)
         stop = attach_stop(ex, {"id": intent_id, "coin": coin, "side": llm_side,
                                 "qty": fill["filled_sz"],
                                 "remaining_size": fill["filled_sz"], "stop_px": stop_px})

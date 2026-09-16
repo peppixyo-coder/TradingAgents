@@ -18,9 +18,13 @@ from ..llm_clients.openai_client import (BudgetAborted, GraphAbortError,
                                          disarm_budget)
 
 # rating PM upstream -> contratto HL (conviction resta meccanico a valle)
-_RATING = {"buy": ("long", 0.7), "overweight": ("long", 0.6),
-           "hold": ("flat", 0.0), "underweight": ("short", 0.6),
-           "sell": ("short", 0.7)}
+_RATING = {
+    "buy": ("long", 0.85),
+    "overweight": ("long", 0.75),
+    "hold": ("flat", 0.0),
+    "underweight": ("short", 0.75),
+    "sell": ("short", 0.85),
+}
 
 # Il costruttore di TradingAgentsGraph chiama set_config() su un dict globale:
 # serializzo la sola costruzione; propagate() (il 99% del tempo) gira in

@@ -652,7 +652,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
     if llm_side != quant_side:
-        return done(False, f"LLM {llm_side} contro segnale {quant_side}", gextra)
+        log(f"OFI_MISMATCH | {coin} | ofi_side={quant_side} llm_side={llm_side} "
+            f"z={z:.2f} conf={float(g['decision'].get('confidence') or 0):.2f}")
     lev_choice = g["decision"].get("leverage")
     if isinstance(lev_choice, bool) or not isinstance(lev_choice, (int, float)):
         return done(False, "NO_LEVERAGE: il PM non ha scelto la leva", gextra)

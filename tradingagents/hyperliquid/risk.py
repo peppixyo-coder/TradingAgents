@@ -43,11 +43,12 @@ def check_dd_veto(cfg, equity_now):
 
 
 def size_order(cfg, balance, mid, sigma, atr, conviction,
-               coin="", leverage=None, max_lev_exch=None):
+               coin="", side="long", leverage=None, max_lev_exch=None):
     """Piano d'ordine dimensionato. veto non-Nullo => nessun ordine."""
     vetoes = []
     garch = max(0.25, min(2.0, 0.58 / sigma)) if sigma and sigma > 0 else 1.0
-    notional = balance * cfg.base_frac * garch * conviction
+    base_frac = float(os.getenv("SHORT_MAX_FRAC", "0.05")) if side == "short" else cfg.base_frac
+    notional = balance * base_frac * garch * conviction
     if notional < cfg.min_notional:
         vetoes.append(f"MIN_NOTIONAL ({notional:.2f} < {cfg.min_notional})")
 

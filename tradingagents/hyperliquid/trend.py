@@ -26,8 +26,8 @@ def detect_trend(candles):
     if len(closes) < 60:
         rel = (close / ema20 - 1.0) if ema20 else 0.0
         score = 1 if rel > 0.003 else -1 if rel < -0.003 else 0
-        return {"trend": "UPTREND" if score > 0 else "DOWNTREND" if score < 0 else "RANGING",
-                "score": score, "ema20": ema20, "ema50": ema20,
+        trend = "UPTREND" if score >= 2 else "DOWNTREND" if score <= -2 else "RANGING"
+        return {"trend": trend, "score": score, "ema20": ema20, "ema50": ema20,
                 "ema50_slope_pct": 0.0, "close": close}
     ema50 = _ema(closes, 50)
     ema50_prev = _ema(closes[:-5], 50)

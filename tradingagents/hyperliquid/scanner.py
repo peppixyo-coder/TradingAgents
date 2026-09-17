@@ -144,19 +144,14 @@ def ema20_daily_gate(side, closes_1d, price):
     return price >= ema if side > 0 else price <= ema
 
 
-def triggers(rows, z_min, max_n=3, d1_map=None, log_fn=None):
-    """Top-N per |OFI_z| sopra soglia con conviction meccanico > 0.
-
-    Con d1_map applica il pre-filtro trend EMA20 daily PRIMA del grafo LLM:
-    i segnali controtendenza non arrivano mai agli agenti. Gli scartati sono
-    loggati separatamente per verificare nel paper se il filtro taglia
-    buoni segnali o solo rumore."""
-
+def triggers(rows, z_min, max_n=3, d1_map=None, log_fn=None, blacklist=()):
+    """Top-N OFI triggers, excluding configured assets before graph launch."""
     def say(m):
         (log_fn or print)(m)
-
-    hit = [r for r in rows if abs(r["ofi_z"]) >= z_min and r["conviction"] > 0]
+    hit = [r for r in rows if r["coin"] not in blacklist
+           and abs(r["ofi_z"]) >= z_min and r["conviction"] > 0]
+    for r in rows:
+        if r["coin"] in blacklist:
+            say(f"[Scanner] {r['coin']} BLACKLISTED: skip before graph")
     hit.sort(key=lambda r: -abs(r["ofi_z"]))
-    # T57: directional eligibility is decided after the LLM using the
-    # multi-indicator trend gate; do not discard counter-trend candidates here.
     return hit[:max_n]

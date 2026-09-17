@@ -651,10 +651,17 @@ def run_cycle(cfg, c, ex, coin, pre=None):
                         "cancellato (verificare book)", gextra)
     elif llm_side == "flat":
         return done(False, "PM: flat", gextra)
+    if llm_side == "short" and trend_info["trend"] != "DOWNTREND":
+        return done(False, f"SHORT_TREND_VETO | trend={trend_info['trend']} "
+                    f"score={trend_info['score']} | shorts require DOWNTREND", gextra)
+    if llm_side == "short" and z > 0:
+        log(f"SHORT_OFI_VETO | {coin} | ofi_z={z:.2f} "
+            "(positive = buying pressure) | short needs negative OFI")
+        return done(False, f"SHORT_OFI_VETO | ofi_z={z:.2f} positive, "
+                    "short requires selling pressure", gextra)
     if llm_side != quant_side:
         log(f"OFI_MISMATCH | {coin} | ofi_side={quant_side} llm_side={llm_side} "
             f"z={z:.2f} conf={float(g['decision'].get('confidence') or 0):.2f}")
-    lev_choice = g["decision"].get("leverage")
     if isinstance(lev_choice, bool) or not isinstance(lev_choice, (int, float)):
         return done(False, "NO_LEVERAGE: il PM non ha scelto la leva", gextra)
     try:
@@ -672,7 +679,8 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     vetoes = risk.check_dd_veto(cfg, eq)
     ch_now = ch_pre
     plan = risk.size_order(cfg, eq, mid, sigma, atr, conv,
-                           coin=coin, leverage=lev_choice, max_lev_exch=ml_exch)
+                           coin=coin, side=llm_side, leverage=lev_choice,
+                           max_lev_exch=ml_exch)
     if plan.get("lev_note"):
         log(plan["lev_note"])
     stop_px = mid - plan["stop_dist"] if llm_side == "long" else mid + plan["stop_dist"]
@@ -999,11 +1007,11 @@ def main(argv=None):
                 ti = trend.detect_trend(d1_map.get(r["coin"]) or [])
                 log(f"TREND | {r['coin']} | trend={ti['trend']} score={ti['score']} | "
                     f"ema20={ti['ema20']:.4f} ema50={ti['ema50']:.4f} | close={ti['close']:.4f}")
-            for r in rows:
                 log(f"[scan] {r['coin']:8s} px={r['mid']:,.4g} z={r['ofi_z']:+.2f} "
                     f"rsi={r['rsi']} macd_h={r['macd_h']} vol_x={r['vol_x']} "
                     f"fund={r['funding'] * 24 * 365 * 100:+.2f}% oiD={r['oi_delta']}")
-            trig = scanner.triggers(rows, cfg.signal_z_min, d1_map=d1_map, log_fn=log)
+            trig = scanner.triggers(rows, cfg.signal_z_min, d1_map=d1_map,
+                                    log_fn=log, blacklist=cfg.asset_blacklist)
             _write_screener_json(rows, funnel, [t["coin"] for t in trig])
             log(f"[trigger] {len(trig)}/{len(rows)} sopra {cfg.signal_z_min}s: "
                 f"{[r['coin'] for r in trig]}")

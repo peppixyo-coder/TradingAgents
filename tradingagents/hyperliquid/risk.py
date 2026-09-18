@@ -8,7 +8,9 @@ e' scelta dal Trader Agent per ogni trade: nessun cap per-posizione nel codice.
 Il RiskManager la clippa solo al massimo consentito dall'exchange per l'asset
 e valuta la leva TOTALE del portfolio come advisory con riduzione di size.
 """
+import os
 import time
+
 from . import store
 from .executor import TP_MULTS   # T44: fonte unica del primo take-profit
 

@@ -621,6 +621,7 @@ def run_cycle(cfg, c, ex, coin, pre=None):
     # prezzo corrente. Upgrade: limit entry con slippage budget esplicito.
     mid = float(c.all_mids().get(coin) or mid)
     llm_side, rationale = gextra["llm_side"], gextra["rationale"]
+    lev_choice = g["decision"].get("leverage")
     closed_reversal = False                    # A-09: set dopo close reversal
     if held_it:
         rev = reversal_decision(held_it["side"], llm_side,

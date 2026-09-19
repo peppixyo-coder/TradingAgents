@@ -145,6 +145,37 @@ def _normalize_messages(messages):
     return out
 
 
+PROMPT_TOKEN_BUDGET = 10_000
+_CHARS_PER_TOKEN = 4
+
+
+def _clip_content(text, limit):
+    if len(text) <= limit:
+        return text
+    marker = "\n...[prompt section clipped deterministically]...\n"
+    keep = max(0, limit - len(marker))
+    left = (keep + 1) // 2
+    return text[:left] + marker + text[-(keep - left):]
+
+
+def _fit_prompt_budget(messages, budget= PROMPT_TOKEN_BUDGET):
+    normalized = _normalize_messages(messages)
+    limit = budget * _CHARS_PER_TOKEN
+    total = sum(len(str(m.get("content", ""))) for m in normalized)
+    if total <= limit:
+        return normalized
+    contents = [str(m.get("content", "")) for m in normalized]
+    excess = total - limit
+    for i in sorted(range(len(contents)), key=lambda n: len(contents[n]), reverse=True):
+        if excess <= 0:
+            break
+        target = max(0, len(contents[i]) - excess)
+        clipped = _clip_content(contents[i], target)
+        excess -= len(contents[i]) - len(clipped)
+        contents[i] = clipped
+    return [{**m, "content": contents[i]} for i, m in enumerate(normalized)]
+
+
 class NormalizedChatOpenAI(ChatOpenAI):
     """ChatOpenAI with normalized content output and capability-aware binding.
 
@@ -161,7 +192,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        payload["messages"] = _normalize_messages(payload.get("messages", []))
+        payload["messages"] = _fit_prompt_budget(payload.get("messages", []))
         return payload
 
     def _invoke_raw(self, input, config, **kwargs):

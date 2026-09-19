@@ -74,6 +74,31 @@ def test_normalize_messages_flattens_content_without_losing_fields():
                for m in messages)
 
 
+
+@pytest.mark.unit
+def test_fit_prompt_budget_clips_large_sections_and_preserves_messages():
+    from tradingagents.llm_clients.openai_client import PROMPT_TOKEN_BUDGET, _fit_prompt_budget
+
+    messages = [
+        {"role": "system", "content": "critical asset JUP and side long"},
+        {"role": "user", "content": "news " * 12000, "tool_calls": [{"id": "x"}]},
+        {"role": "assistant", "content": "history " * 2000},
+    ]
+    fitted = _fit_prompt_budget(messages)
+    assert sum(len(m["content"]) for m in fitted) <= PROMPT_TOKEN_BUDGET * 4
+    assert fitted[0]["content"] == messages[0]["content"]
+    assert fitted[1]["role"] == "user" and fitted[1]["tool_calls"] == [{"id": "x"}]
+    assert "JUP" in fitted[0]["content"] and "long" in fitted[0]["content"]
+    assert all(isinstance(m["content"], str) for m in fitted)
+
+
+@pytest.mark.unit
+def test_fit_prompt_budget_leaves_small_payload_unchanged():
+    from tradingagents.llm_clients.openai_client import _fit_prompt_budget
+
+    messages = [{"role": "user", "content": "asset JUP side long"}]
+    assert _fit_prompt_budget(messages) == messages
+
 # ---------------------------------------------------------------------------
 # Reasoning content propagation across turns
 # ---------------------------------------------------------------------------

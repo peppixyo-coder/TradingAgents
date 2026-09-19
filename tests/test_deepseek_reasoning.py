@@ -47,6 +47,33 @@ class TestInputToMessages:
         assert _input_to_messages("hello") == []
 
 
+@pytest.mark.unit
+def test_normalize_messages_flattens_content_without_losing_fields():
+    from tradingagents.llm_clients.openai_client import _normalize_messages
+
+    dict_message = {
+        "role": "tool",
+        "content": [{"type": "text", "text": "a"}, {"type": "image", "id": 1}],
+        "tool_calls": [{"id": "call-1"}],
+    }
+    langchain_message = HumanMessage(content=[{"type": "text", "text": "b"}])
+    messages = _normalize_messages([
+        dict_message,
+        langchain_message,
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "already plain"},
+    ])
+
+    assert [m["content"] for m in messages[:1]] == ["a\n{'type': 'image', 'id': 1}"]
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_calls"] == [{"id": "call-1"}]
+    assert messages[1].content == "b"
+    assert messages[2]["content"] == ""
+    assert messages[3]["content"] == "already plain"
+    assert all(isinstance(m.content if not isinstance(m, dict) else m["content"], str)
+               for m in messages)
+
+
 # ---------------------------------------------------------------------------
 # Reasoning content propagation across turns
 # ---------------------------------------------------------------------------

@@ -348,6 +348,7 @@ def maintain_tps(c, cfg, ex):
         rem = float(it["remaining_size"] or it["qty"])
         szi = live.get(it["coin"], 0.0)
         closed = rem - szi
+        eps = max(1e-12, rem * 1e-9)
         if szi <= eps:
             verified = False
             for n in planned:

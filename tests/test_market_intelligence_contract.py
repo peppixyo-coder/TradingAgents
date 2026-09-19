@@ -22,7 +22,7 @@ def raw(**overrides):
         "canonical_asset": "BTC",
         "fetched_at": "2026-09-19T12:00:00Z",
         "as_of": "2026-09-19T11:59:00Z",
-        "provider": "manual_export",
+        "provider": "fixture",
         "status": "ok",
         "data": {"price": 100, "volume": 0},
         "quality": {"freshness_seconds": 60, "source": "fixture",

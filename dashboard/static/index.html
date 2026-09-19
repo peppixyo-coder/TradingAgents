@@ -45,8 +45,8 @@
   <button data-tab="analytics">Analytics</button>
   <button data-tab="agents">Agents</button>
   <button data-tab="market">Market</button>
+  <button data-tab="advanced-desk">Advanced Desk</button>
   <button data-tab="system">System</button>
-  <span class="spacer"></span>
   <a href="/api/report" target="_blank" class="ghost">Report MD</a>
 </nav>
 
@@ -156,6 +156,27 @@
   </div>
 </section>
 
+<section id="tab-advanced-desk">
+  <div class="desk-toolbar" role="toolbar" aria-label="Advanced Desk controls">
+    <label for="desk-search">Search universe</label>
+    <input id="desk-search" type="search" placeholder="BTC, ETHFI…" autocomplete="off">
+    <label for="desk-sort">Sort</label>
+    <select id="desk-sort"><option value="coin">Asset</option><option value="vol24h">Volume</option><option value="oi">Open interest</option><option value="chg24h">24h change</option></select>
+    <button class="ghost" id="desk-reset" type="button">Reset view</button>
+  </div>
+  <div class="desk-grid">
+    <div class="card desk-watchlist">
+      <div class="card-h"><h2>Hyperliquid universe</h2><span class="hint" id="desk-count"></span></div>
+      <div class="desk-table-wrap"><table class="tbl" id="desk-table"><thead><tr><th scope="col">Asset</th><th scope="col">Mark</th><th scope="col">24h</th><th scope="col">Volume</th><th scope="col">OI</th><th scope="col">Funding</th><th scope="col">Source</th></tr></thead><tbody></tbody></table></div>
+      <p class="empty" id="desk-empty">No matching assets.</p>
+    </div>
+    <div class="card desk-detail" aria-live="polite">
+      <div class="card-h"><h2 id="desk-title">Select an asset</h2><span class="chip" id="desk-status">unavailable</span></div>
+      <div id="desk-detail-body" class="desk-detail-body"><p class="empty">Choose an asset to inspect its current read-only market context.</p></div>
+      <div class="desk-source" id="desk-source"><strong>Data provenance</strong><span>Hyperliquid metrics arrive with the existing metrics frame.</span></div>
+    </div>
+  </div>
+</section>
 <section id="tab-system">
   <div class="grid c-3">
     <div class="card"><div class="card-h"><h2>Salute</h2></div><div id="sys-health" class="kv"></div></div>

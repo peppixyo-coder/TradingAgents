@@ -130,3 +130,18 @@ footer{padding:14px 20px;color:var(--faint);font-size:11px;border-top:1px solid 
 
 /* T39: chiusure amministrative - attenuate, non sono decisioni di trading */
 tr.adm > td{opacity:.55}
+
+/* Original Advanced Desk */
+.desk-toolbar { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; padding:.7rem; border:1px solid var(--line); background:var(--panel); }
+.desk-toolbar label { color:var(--muted); font-size:.72rem; text-transform:uppercase; }
+.desk-toolbar input, .desk-toolbar select { min-height:2rem; background:var(--bg); color:var(--text); border:1px solid var(--line); padding:.35rem .5rem; }
+.desk-grid { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(18rem,.6fr); gap:1rem; }
+.desk-table-wrap { overflow:auto; max-height:62vh; }
+#desk-table tr[tabindex] { cursor:pointer; }
+#desk-table tr[tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.desk-detail-body { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; padding:1rem 0; }
+.desk-stat { display:flex; justify-content:space-between; gap:1rem; border-bottom:1px solid var(--line); padding:.55rem 0; }
+.desk-stat b { color:var(--muted); font-weight:500; }
+.desk-source { border-top:1px solid var(--line); padding-top:.8rem; display:grid; gap:.35rem; color:var(--muted); font-size:.75rem; }
+@media (max-width: 900px) { .desk-grid { grid-template-columns:1fr; } .desk-table-wrap { max-height:none; } }
+@media (max-width: 420px) { .desk-toolbar { align-items:stretch; } .desk-toolbar input, .desk-toolbar select, .desk-toolbar button { width:100%; } .desk-detail-body { grid-template-columns:1fr; } }

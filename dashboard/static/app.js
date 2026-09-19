@@ -77,6 +77,7 @@ function onMetrics(m) {
   if (S.tab === "analytics") renderAnalytics();
   if (S.tab === "agents") renderAgents();
   if (S.tab === "market") renderMarket();
+  if (S.tab === "advanced-desk") renderAdvancedDesk();
   if (S.tab === "system") renderSystem();
 }
 
@@ -579,6 +580,32 @@ async function openAsset(coin) {
   } catch (e) { $("#ap-mid").textContent = "feed errore: " + e.message; }
 }
 
+/* ---------- original Advanced Desk ---------- */
+const DESK_KEY = "hl-paper-desk:advanced-view";
+function saveDeskState() {
+  localStorage.setItem(DESK_KEY, JSON.stringify({ search: $("#desk-search")?.value || "", sort: $("#desk-sort")?.value || "coin" }));
+}
+function restoreDeskState() {
+  try { const s = JSON.parse(localStorage.getItem(DESK_KEY) || "{}"); if (s.search) $("#desk-search").value = s.search; if (s.sort) $("#desk-sort").value = s.sort; } catch {}
+}
+function renderAdvancedDesk() {
+  const search = $("#desk-search").value.trim().toUpperCase(), sort = $("#desk-sort").value;
+  const rows = S.market.filter(r => !search || r.coin.toUpperCase().includes(search)).slice().sort((a, b) => sort === "coin" ? a.coin.localeCompare(b.coin) : (Number(b[sort]) || 0) - (Number(a[sort]) || 0));
+  const body = $("#desk-table tbody"); body.replaceChildren();
+  rows.forEach(r => {
+    const tr = document.createElement("tr"); tr.tabIndex = 0; tr.dataset.coin = r.coin;
+    [r.coin, px(r.mark), pct(r.chg24h), usd(r.vol24h), usd(r.oi), pct(r.fundingAnn), "Hyperliquid"].forEach((v, i) => { const td = document.createElement("td"); td.textContent = v; if (i === 2 || i === 5) td.className = cls(i === 5 ? -r.fundingAnn : r.chg24h); tr.append(td); });
+    tr.addEventListener("click", () => selectDeskAsset(r)); tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectDeskAsset(r); } }); body.append(tr);
+  });
+  $("#desk-count").textContent = `${rows.length}/${S.market.length} assets`; $("#desk-empty").hidden = rows.length > 0;
+}
+function selectDeskAsset(r) {
+  $("#desk-title").textContent = r.coin; $("#desk-status").textContent = "live · Hyperliquid"; $("#desk-detail-body").replaceChildren();
+  [["Mark", px(r.mark)], ["24h", pct(r.chg24h)], ["Volume", usd(r.vol24h)], ["Open interest", usd(r.oi)], ["Funding", pct(r.fundingAnn)], ["Spread", r.spread == null ? "—" : `${r.spread} bps`]].forEach(([k, v]) => { const row = document.createElement("div"); row.className = "desk-stat"; const key = document.createElement("b"); key.textContent = k; const val = document.createElement("span"); val.textContent = v; row.append(key, val); $("#desk-detail-body").append(row); });
+  $("#desk-source").lastElementChild.textContent = "Source: Hyperliquid metrics · current frame · OHLCV-dependent indicators unavailable here.";
+  $$("#desk-table tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.coin === r.coin));
+}
+
 /* ---------- system ---------- */
 function renderSystem() {
   const k = S.k, c = S.cfg;
@@ -625,13 +652,15 @@ function exportCsv() {
 function switchTab(name) {
   S.tab = name;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
-  $$("main section").forEach(s => s.classList.toggle("on", s.id === "tab-" + name));
   ({ overview: renderOverview, trades: renderTrades, analytics: renderAnalytics,
-     agents: renderAgents, market: renderMarket, system: renderSystem })[name]?.();
+     agents: renderAgents, market: renderMarket, "advanced-desk": renderAdvancedDesk, system: renderSystem })[name]?.();
 }
 document.addEventListener("DOMContentLoaded", () => {
-  $$("nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
-  $("#f-status").onchange = renderTrades; $("#f-outcome").onchange = renderTrades;
+  restoreDeskState();
+  $$('nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+  $("#desk-search").oninput = () => { saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-sort").onchange = () => { saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-reset").onclick = () => { $("#desk-search").value = ""; $("#desk-sort").value = "coin"; saveDeskState(); renderAdvancedDesk(); };
   $("#f-coin").oninput = renderTrades;
   $("#btn-csv").onclick = exportCsv;
   $("#tbl-trades").addEventListener("click", e => {

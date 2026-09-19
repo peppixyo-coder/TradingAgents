@@ -11,6 +11,7 @@ Two pieces verified:
    https://api-docs.deepseek.com/guides/tool_calls.
 """
 
+import inspect
 import os
 
 import pytest
@@ -306,9 +307,12 @@ class TestDeepSeekLiveStructuredOutput:
 @pytest.mark.unit
 class TestBaseClassIsolation:
     def test_normalized_does_not_propagate_reasoning_content(self):
-        """The general-purpose NormalizedChatOpenAI must not carry
-        DeepSeek-specific behaviour. Only the subclass does."""
-        assert not hasattr(NormalizedChatOpenAI, "_get_request_payload") or (
-            NormalizedChatOpenAI._get_request_payload
-            is NormalizedChatOpenAI.__bases__[0]._get_request_payload
-        )
+        """Only NormalizedChatOpenAI's shared T68b budget hook lives on the
+        base class; DeepSeek reasoning_content round-trip must stay subclass-only."""
+        base_payload = NormalizedChatOpenAI._get_request_payload
+        deepseek_payload = DeepSeekChatOpenAI._get_request_payload
+        assert base_payload is not deepseek_payload
+        source = inspect.getsource(base_payload)
+        assert "_fit_prompt_budget" in source
+        assert "reasoning_content" not in source
+        assert "reasoning_content" in inspect.getsource(deepseek_payload)

@@ -926,6 +926,15 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         r = futs[fut]
         try:
             res = fut.result()
+        except llm.PromptBudgetExceeded as e:
+            log(f"[cycle] SKIP_PROMPT_BUDGET {r['coin']}: "
+                f"tokens={e.estimated_tokens} reason={e.reason}")
+            _log_cycle(stage="skip_prompt_budget", coin=r["coin"],
+                       error={"code": "prompt_budget_exceeded",
+                              "asset": r["coin"],
+                              "tokens": e.estimated_tokens,
+                              "reason": e.reason})
+            continue
         except (llm.BudgetAborted, llm.GraphAbortError, OpenAIError) as e:
             # T42: budget sforato o provider giu': NON e' una coin rotta ->
             # niente cooldown 1h, si riprova al prossimo ciclo di scansione.

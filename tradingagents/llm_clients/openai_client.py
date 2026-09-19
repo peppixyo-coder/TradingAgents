@@ -148,6 +148,21 @@ def _normalize_messages(messages):
 
 PROMPT_TOKEN_BUDGET = 10_000
 _CHARS_PER_TOKEN = 4
+class PromptBudgetExceeded(ValueError):
+    """Safe reduction failed; callers skip without provider access."""
+
+    def __init__(self, *, asset=None, node=None, section=None,
+                 estimated_tokens=None,
+                 reason="structured content cannot be reduced safely"):
+        self.asset = asset
+        self.node = node
+        self.section = section
+        self.estimated_tokens = estimated_tokens
+        self.reason = reason
+        super().__init__(
+            f"prompt_budget_exceeded asset={asset or '?'} node={node or '?'} "
+            f"section={section or '?'} tokens={estimated_tokens or '?'} "
+            f"reason={reason}")
 
 
 def _clip_content(text, limit):
@@ -164,7 +179,7 @@ def _clip_content(text, limit):
     compact = _compact_json(value, limit)
     encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     if len(encoded) > limit:
-        raise ValueError("prompt_budget_exceeded: structured content cannot be reduced safely")
+        raise PromptBudgetExceeded(estimated_tokens=len(encoded) // _CHARS_PER_TOKEN)
     return encoded
 
 
@@ -217,7 +232,8 @@ def _fit_prompt_budget(messages, budget=PROMPT_TOKEN_BUDGET):
         excess -= len(contents[i]) - len(clipped)
         contents[i] = clipped
     if excess > 0:
-        raise ValueError("prompt_budget_exceeded: total messages exceed safe budget")
+        raise PromptBudgetExceeded(estimated_tokens=total // _CHARS_PER_TOKEN,
+                                   reason="total messages exceed safe budget")
     return [{**m, "content": contents[i]} for i, m in enumerate(normalized)]
 
 

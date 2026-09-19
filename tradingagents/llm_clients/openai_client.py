@@ -119,6 +119,32 @@ def sweep_armed_budgets():
     return out
 
 
+def _normalize_messages(messages):
+    """Flatten multimodal content blocks to strings for 9router."""
+    out = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                    for b in content)
+            elif content is None:
+                content = ""
+            out.append({**msg, "content": content})
+        else:
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                    for b in content)
+            elif content is None:
+                content = ""
+            msg.content = content
+            out.append(msg)
+    return out
+
+
 class NormalizedChatOpenAI(ChatOpenAI):
     """ChatOpenAI with normalized content output and capability-aware binding.
 
@@ -128,14 +154,15 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     ``with_structured_output`` consults the llm config's capabilities table
     to pick the method and to decide whether ``tool_choice`` may be sent.
-    Models that reject ``tool_choice`` (e.g. DeepSeek V4 and reasoner - per
-    their official tool-calling guide) still bind the schema as a tool, but
+    Models that reject ``tool_choice`` still bind the schema as a tool, but
     no ``tool_choice`` parameter is sent.
 
-    Provider-specific quirks beyond structured-output (e.g. DeepSeek's
-    reasoning_content roundtrip) live in subclasses so this base class
-    stays small.
+    Provider-specific quirks beyond structured-output live in subclasses.
     """
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        payload["messages"] = _normalize_messages(payload.get("messages", []))
+        return payload
 
     def _invoke_raw(self, input, config, **kwargs):
         # T43: 9router incapsula gli errori upstream (es. 502 Nvidia) in

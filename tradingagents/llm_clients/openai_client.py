@@ -156,51 +156,52 @@ def _clip_content(text, limit):
     try:
         value = json.loads(text)
     except (TypeError, ValueError):
-        value = None
-    if value is not None:
-        compact = _compact_json(value, limit)
-        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) <= limit:
-            return encoded
-        if isinstance(value, dict):
-            critical = {k: v for k, v in value.items()
-                        if str(k).lower() in _JSON_CRITICAL}
-            encoded = json.dumps(critical, ensure_ascii=False, separators=(",", ":"))
-            if len(encoded) <= limit:
-                return encoded
-    marker = "\n...[prompt section clipped deterministically]...\n"
-    keep = max(0, limit - len(marker))
-    left = (keep + 1) // 2
-    return text[:left] + marker + text[-(keep - left):]
+        marker = "\n...[prompt section clipped deterministically]...\n"
+        keep = max(0, limit - len(marker))
+        return text[:keep // 2] + marker + text[-(keep - keep // 2):]
+    if not isinstance(value, (dict, list)):
+        return json.dumps(str(value)[:max(0, limit // 2)], ensure_ascii=False)
+    compact = _compact_json(value, limit)
+    encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > limit:
+        raise ValueError("prompt_budget_exceeded: structured content cannot be reduced safely")
+    return encoded
 
 
-_JSON_CRITICAL = {"asset", "coin", "side", "price", "entry", "indicators",
-                  "funding", "open_interest", "oi", "risk", "constraints"}
+_JSON_CRITICAL = {"asset", "coin", "side", "action", "price", "entry", "timeframe",
+                  "indicators", "funding", "open_interest", "oi", "risk", "constraints"}
 
 
 def _compact_json(value, limit):
-    if len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) <= limit:
-        return value
+    """Bounded JSON reduction: preserve critical keys, trim lists/strings once."""
     if isinstance(value, dict):
-        out = dict(value)
-        for key in sorted(out, key=lambda k: (str(k).lower() in _JSON_CRITICAL,
-                                               -len(str(out[k])))):
-            if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= limit:
-                break
+        out = {}
+        for key, item in value.items():
+            if str(key).lower() in _JSON_CRITICAL:
+                out[key] = item
+        for key, item in value.items():
+            if key not in out:
+                out[key] = item
+        encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) <= limit:
+            return out
+        for key in list(out):
             if str(key).lower() in _JSON_CRITICAL:
                 continue
-            out[key] = _compact_json(out[key], max(1, limit // 2))
-            if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
-                out.pop(key, None)
-        return out
+            out.pop(key)
+            encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return out
+        return {key: out[key] for key in out if str(key).lower() in _JSON_CRITICAL}
     if isinstance(value, list):
-        return value[:max(1, min(len(value), limit // 20))]
-    if isinstance(value, str):
-        return value[:max(0, limit - 2)]
+        out = value[:max(1, min(len(value), limit // 64))]
+        while len(out) > 1 and len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+            out = out[:len(out) // 2]
+        return out
     return value
 
 
-def _fit_prompt_budget(messages, budget= PROMPT_TOKEN_BUDGET):
+def _fit_prompt_budget(messages, budget=PROMPT_TOKEN_BUDGET):
     normalized = _normalize_messages(messages)
     limit = budget * _CHARS_PER_TOKEN
     total = sum(len(str(m.get("content", ""))) for m in normalized)
@@ -211,11 +212,15 @@ def _fit_prompt_budget(messages, budget= PROMPT_TOKEN_BUDGET):
     for i in sorted(range(len(contents)), key=lambda n: len(contents[n]), reverse=True):
         if excess <= 0:
             break
-        target = max(0, len(contents[i]) - excess)
+        target = max(1, len(contents[i]) - excess)
         clipped = _clip_content(contents[i], target)
         excess -= len(contents[i]) - len(clipped)
         contents[i] = clipped
+    if excess > 0:
+        raise ValueError("prompt_budget_exceeded: total messages exceed safe budget")
     return [{**m, "content": contents[i]} for i, m in enumerate(normalized)]
+
+
 
 
 class NormalizedChatOpenAI(ChatOpenAI):

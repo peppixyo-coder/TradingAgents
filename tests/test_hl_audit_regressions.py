@@ -187,7 +187,7 @@ def test_screener_excludes_configured_asset_blacklist(monkeypatch):
         def asset_ctxs(self):
             names = ["xyz:SKHX", "xyz:CL", "xyz:DRAM", "BTC"]
             return ({"universe": [{"name": n, "isDelisted": False} for n in names]},
-                    [{"dayNtlVlm": "1e9", "openInterest": "10", "funding": "0",
+                    [{"dayNtlVlm": "1e9", "openInterest": "1e9", "funding": "0",
                       "prevDayPx": "10"}] * len(names))
 
     old_universe = registry.universe

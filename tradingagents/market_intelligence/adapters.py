@@ -1,11 +1,8 @@
 """Optional read-only adapters; no trading or operational-state authority."""
 from __future__ import annotations
 
-import csv
-import json
 import time
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 
 from .contract import SnapshotStatus, deterministic_snapshot_id, validate_snapshot
@@ -72,40 +69,51 @@ class OpenBBAdapter:
             return unavailable(asset, self.provider, type(exc).__name__)
 
 
-class FinceptAdapter:
-    """Disabled-by-default boundary for documented local JSON/CSV exports only."""
+class MassiveAdapter:
+    """Optional REST boundary; callers must provide verified symbol mapping/fetcher."""
 
-    provider = "fincept"
+    provider = "massive"
 
-    def __init__(self, *, enabled: bool = False):
+    def __init__(self, *, enabled: bool = False, timeout_s: float = 5.0):
         self.enabled = enabled
+        self.timeout_s = max(0.1, min(float(timeout_s), 30.0))
 
-    def import_file(self, path: str | Path, asset: str) -> dict[str, Any]:
+    def snapshot(self, asset: str, *, symbol: str | None = None,
+                 fetcher: Callable[[str], Mapping[str, Any]] | None = None) -> dict[str, Any]:
         if not self.enabled:
-            return unavailable(asset, self.provider, "bridge unavailable/not configured")
-        source = Path(path)
+            return unavailable(asset, self.provider, "not configured")
+        if not symbol or fetcher is None:
+            return validate_snapshot({
+                "schema_version": 1,
+                "snapshot_id": deterministic_snapshot_id(asset, self.provider, "unsupported"),
+                "asset": asset, "canonical_asset": asset,
+                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "as_of": None, "provider": self.provider,
+                "status": SnapshotStatus.UNSUPPORTED.value, "data": {},
+                "quality": {"freshness_seconds": None, "source": "massive",
+                            "coverage": "none", "errors": ["verified symbol mapping required"]},
+                "provenance": {"endpoint_or_query": "redacted", "license": "Massive terms",
+                                "requires_api_key": True, "paid": True},
+            })
         try:
-            if source.suffix.lower() == ".json":
-                data = json.loads(source.read_text(encoding="utf-8"))
-            elif source.suffix.lower() == ".csv":
-                with source.open(newline="", encoding="utf-8") as fh:
-                    data = list(csv.DictReader(fh))
-            else:
-                return unavailable(asset, self.provider, "only documented JSON/CSV imports allowed")
-            if not isinstance(data, (Mapping, list)):
-                return unavailable(asset, self.provider, "malformed export")
+            started = time.monotonic()
+            data = fetcher(symbol)
+            if time.monotonic() - started > self.timeout_s:
+                return unavailable(asset, self.provider, "timeout")
+            if not isinstance(data, Mapping):
+                return unavailable(asset, self.provider, "malformed response")
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             return validate_snapshot({
                 "schema_version": 1,
                 "snapshot_id": deterministic_snapshot_id(asset, self.provider, now),
                 "asset": asset, "canonical_asset": asset, "fetched_at": now,
-                "as_of": None, "provider": self.provider,
+                "as_of": data.get("as_of"), "provider": self.provider,
                 "status": SnapshotStatus.OK.value, "data": data,
-                "quality": {"freshness_seconds": 0, "source": "documented_export",
+                "quality": {"freshness_seconds": 0, "source": "massive",
                             "coverage": "partial", "errors": []},
-                "provenance": {"endpoint_or_query": "local export filename only",
-                                "license": "Fincept terms apply to source",
-                                "requires_api_key": False, "paid": False},
+                "provenance": {"endpoint_or_query": "redacted", "license": "Massive terms",
+                                "requires_api_key": True, "paid": True},
             })
         except Exception as exc:
             return unavailable(asset, self.provider, type(exc).__name__)
+

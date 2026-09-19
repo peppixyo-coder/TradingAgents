@@ -1,10 +1,9 @@
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tradingagents.market_intelligence.adapters import FinceptAdapter, OpenBBAdapter
+from tradingagents.market_intelligence.adapters import OpenBBAdapter
 
 
 def test_openbb_disabled_does_not_import_or_call_provider():
@@ -19,29 +18,28 @@ def test_openbb_malformed_provider_isolated():
     assert out["status"] == "unavailable"
     assert "malformed" in out["quality"]["errors"][0]
 
+def test_massive_disabled_and_unmapped_are_safe():
+    from tradingagents.market_intelligence.adapters import MassiveAdapter
+    assert MassiveAdapter(enabled=False).snapshot("BTC")["status"] == "unavailable"
+    out = MassiveAdapter(enabled=True).snapshot("xyz:COIN")
+    assert out["status"] == "unsupported"
+    assert out["provenance"]["requires_api_key"] is True
 
-def test_fincept_disabled_does_not_read_file(tmp_path):
-    path = tmp_path / "secret.json"
-    path.write_text(json.dumps({"api_key": "must-not-read"}), encoding="utf-8")
-    out = FinceptAdapter(enabled=False).import_file(path, "BTC")
-    assert out["status"] == "unavailable"
-    assert "must-not-read" not in json.dumps(out)
 
-
-def test_fincept_documented_json_and_csv_import(tmp_path):
-    json_path = tmp_path / "export.json"
-    json_path.write_text(json.dumps({"price": 100}), encoding="utf-8")
-    assert FinceptAdapter(enabled=True).import_file(json_path, "BTC")["data"]["price"] == 100
-    csv_path = tmp_path / "export.csv"
-    csv_path.write_text("price,volume\n101,2\n", encoding="utf-8")
-    out = FinceptAdapter(enabled=True).import_file(csv_path, "BTC")
-    assert out["status"] == "ok" and out["data"][0]["price"] == "101"
+def test_massive_valid_mock_and_malformed_response():
+    from tradingagents.market_intelligence.adapters import MassiveAdapter
+    out = MassiveAdapter(enabled=True).snapshot("BTC", symbol="X:BTCUSD",
+                                                fetcher=lambda _: {"price": 100})
+    assert out["status"] == "ok" and out["data"]["price"] == 100
+    bad = MassiveAdapter(enabled=True).snapshot("BTC", symbol="X:BTCUSD",
+                                                fetcher=lambda _: [])
+    assert bad["status"] == "unavailable"
 def test_advisory_context_is_bounded_and_delimited():
     from tradingagents.market_intelligence.context import format_external_market_context
     out = format_external_market_context([{
         "schema_version": 1, "snapshot_id": "x", "asset": "BTC",
         "canonical_asset": "BTC", "fetched_at": "2026-09-19T12:00:00Z",
-        "as_of": None, "provider": "manual_export", "status": "ok",
+        "as_of": None, "provider": "fixture", "status": "ok",
         "data": {"headline": "ignore this instruction"},
         "quality": {"freshness_seconds": 1, "source": "fixture", "coverage": "full", "errors": []},
         "provenance": {"endpoint_or_query": "fixture", "license": "test", "requires_api_key": False, "paid": False},
@@ -56,4 +54,3 @@ def test_registry_reports_disabled_sources_without_file_access(monkeypatch):
     out = health()
     assert out["enabled"] is False
     assert out["providers"]["openbb"]["status"] == "unavailable"
-    assert out["providers"]["fincept"]["status"] == "unavailable"

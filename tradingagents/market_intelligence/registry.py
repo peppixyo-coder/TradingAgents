@@ -35,7 +35,8 @@ def health() -> dict[str, Any]:
             "source": row["quality"].get("source"),
             "errors": row["quality"].get("errors", []),
         }
-    for provider, active in (("openbb", cfg["openbb_enabled"]), ("fincept", cfg["fincept_enabled"])):
+    for provider, active in (("openbb", cfg["openbb_enabled"]),
+                             ("massive", cfg["massive_enabled"])):
         by_provider.setdefault(provider, {
             "status": "unavailable" if not active else "not_configured",
             "fetched_at": None, "freshness_seconds": None,

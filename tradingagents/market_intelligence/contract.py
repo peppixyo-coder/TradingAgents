@@ -25,6 +25,7 @@ class SnapshotStatus(str, Enum):
     OK = "ok"
     PARTIAL = "partial"
     STALE = "stale"
+    UNSUPPORTED = "unsupported"
     UNAVAILABLE = "unavailable"
     ERROR = "error"
 

@@ -161,6 +161,12 @@ def _clip_content(text, limit):
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         if len(encoded) <= limit:
             return encoded
+        if isinstance(value, dict):
+            critical = {k: v for k, v in value.items()
+                        if str(k).lower() in _JSON_CRITICAL}
+            encoded = json.dumps(critical, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return encoded
     marker = "\n...[prompt section clipped deterministically]...\n"
     keep = max(0, limit - len(marker))
     left = (keep + 1) // 2

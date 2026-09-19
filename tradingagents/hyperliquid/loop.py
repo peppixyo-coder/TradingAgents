@@ -1004,7 +1004,8 @@ def main(argv=None):
             _, n_perp, n_spot = registry.universe(c)
             log(f"[universe] {n_perp} perp + {n_spot} spot; mids {len(mids)}")
 
-            passed, funnel = screener.screene(c, mids)
+            passed, funnel = screener.screene(c, mids, blacklist=cfg.asset_blacklist,
+                                              log_fn=log)
             log("[screener] " + " -> ".join(f"{k}={v}" for k, v in funnel.items())
                 + f"\n[screener] passati ({len(passed)}): "
                 + ", ".join(r["coin"] for r in passed))

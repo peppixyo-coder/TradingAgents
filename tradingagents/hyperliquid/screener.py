@@ -64,8 +64,8 @@ def _spread_stage(rows, fetch_book, funnel):
     return passed
 
 
-def screene(c, mids):
-    """(passati [{coin, mid, chg24h, vol24h, oi, funding, spread_bps, ctx}], funnel)."""
+def screene(c, mids, blacklist=(), log_fn=None):
+    """Return screened candidates, excluding configured assets early."""
     from . import registry
     uni = registry.universe(c)[0]  # unica estrazione: la cache 1h e' la radice del fix
     meta, ctxs = c.asset_ctxs()
@@ -81,6 +81,10 @@ def screene(c, mids):
     funnel = {"universo": len(pairs)}
     rows, freschi = [], 0
     for name, ctx in pairs:
+        if name in blacklist:
+            if log_fn:
+                log_fn(f"[screener] {name} BLACKLISTED: skip")
+            continue
         if name not in mids or name.split(":")[-1] in EXCLUDE_BASES:
             continue
         if name not in uni:

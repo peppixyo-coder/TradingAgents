@@ -1,4 +1,4 @@
-import logging
+import json
 import os
 import re
 import threading
@@ -152,10 +152,45 @@ _CHARS_PER_TOKEN = 4
 def _clip_content(text, limit):
     if len(text) <= limit:
         return text
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        value = None
+    if value is not None:
+        compact = _compact_json(value, limit)
+        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) <= limit:
+            return encoded
     marker = "\n...[prompt section clipped deterministically]...\n"
     keep = max(0, limit - len(marker))
     left = (keep + 1) // 2
     return text[:left] + marker + text[-(keep - left):]
+
+
+_JSON_CRITICAL = {"asset", "coin", "side", "price", "entry", "indicators",
+                  "funding", "open_interest", "oi", "risk", "constraints"}
+
+
+def _compact_json(value, limit):
+    if len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) <= limit:
+        return value
+    if isinstance(value, dict):
+        out = dict(value)
+        for key in sorted(out, key=lambda k: (str(k).lower() in _JSON_CRITICAL,
+                                               -len(str(out[k])))):
+            if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= limit:
+                break
+            if str(key).lower() in _JSON_CRITICAL:
+                continue
+            out[key] = _compact_json(out[key], max(1, limit // 2))
+            if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+                out.pop(key, None)
+        return out
+    if isinstance(value, list):
+        return value[:max(1, min(len(value), limit // 20))]
+    if isinstance(value, str):
+        return value[:max(0, limit - 2)]
+    return value
 
 
 def _fit_prompt_budget(messages, budget= PROMPT_TOKEN_BUDGET):

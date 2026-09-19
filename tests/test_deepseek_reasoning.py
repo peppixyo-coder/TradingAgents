@@ -99,6 +99,29 @@ def test_fit_prompt_budget_leaves_small_payload_unchanged():
     messages = [{"role": "user", "content": "asset JUP side long"}]
     assert _fit_prompt_budget(messages) == messages
 
+
+@pytest.mark.unit
+def test_fit_prompt_budget_keeps_oversized_json_valid_and_critical_fields():
+    import json
+
+    from tradingagents.llm_clients.openai_client import _fit_prompt_budget
+
+    payload = {
+        "asset": "JUP", "side": "long", "price": 1.23,
+        "indicators": {"rsi": 55, "macd": 0.4}, "funding": 0.1,
+        "open_interest": 1000000, "risk": {"stop": 1.1},
+        "constraints": ["paper", "reduce-only"],
+        "news": ["headline " * 100 for _ in range(200)],
+    }
+    fitted = _fit_prompt_budget([{"role": "user", "content": json.dumps(payload)}])
+    parsed = json.loads(fitted[0]["content"])
+    assert parsed["asset"] == "JUP" and parsed["side"] == "long"
+    assert parsed["price"] == 1.23 and parsed["funding"] == 0.1
+    assert parsed["open_interest"] == 1000000
+    assert parsed["risk"] == {"stop": 1.1}
+    assert parsed["constraints"] == ["paper", "reduce-only"]
+    assert len(fitted[0]["content"]) <= 40000
+
 # ---------------------------------------------------------------------------
 # Reasoning content propagation across turns
 # ---------------------------------------------------------------------------

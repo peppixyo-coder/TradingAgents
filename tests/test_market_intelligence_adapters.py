@@ -49,3 +49,11 @@ def test_advisory_context_is_bounded_and_delimited():
     assert out.startswith("BEGIN EXTERNAL MARKET DATA")
     assert out.endswith("END EXTERNAL MARKET DATA")
     assert len(out) < 900
+
+def test_registry_reports_disabled_sources_without_file_access(monkeypatch):
+    monkeypatch.delenv("HL_EXTERNAL_SNAPSHOT_FILE", raising=False)
+    from tradingagents.market_intelligence.registry import health
+    out = health()
+    assert out["enabled"] is False
+    assert out["providers"]["openbb"]["status"] == "unavailable"
+    assert out["providers"]["fincept"]["status"] == "unavailable"

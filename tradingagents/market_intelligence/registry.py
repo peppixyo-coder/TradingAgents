@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .adapters import unavailable
 from .config import settings
 from .contract import validate_snapshot
 

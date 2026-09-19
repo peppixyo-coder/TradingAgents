@@ -8,10 +8,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 SCHEMA_VERSION = 1
 MAX_SNAPSHOT_BYTES = 64_000

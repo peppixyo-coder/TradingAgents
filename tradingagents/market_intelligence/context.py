@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
-from .contract import MAX_SNAPSHOT_BYTES, validate_snapshot
+from .contract import validate_snapshot
 
 MAX_CONTEXT_CHARS = 6_000
 

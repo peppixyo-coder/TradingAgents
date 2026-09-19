@@ -4,10 +4,11 @@ from __future__ import annotations
 import csv
 import json
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
-from .contract import ExternalSnapshot, SnapshotStatus, deterministic_snapshot_id, validate_snapshot
+from .contract import SnapshotStatus, deterministic_snapshot_id, validate_snapshot
 
 
 class AdapterError(RuntimeError):

@@ -26,6 +26,8 @@ from tradingagents.hyperliquid import store
 from tradingagents.hyperliquid.config import load
 from tradingagents.hyperliquid.data import DataError, HyPaperClient
 from tradingagents.hyperliquid.loop import equity, load_dotenv
+from tradingagents.market_intelligence.registry import health as market_intelligence_health
+from tradingagents.market_intelligence.registry import load_snapshots
 
 load_dotenv()
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -746,6 +748,32 @@ def api_funding(coin: str):
                          "endTime": int(time.time() * 1000)})
     except Exception as e:
         raise HTTPException(502, str(e))
+
+@app.get("/api/market-intelligence/health")
+def api_market_intelligence_health():
+    return market_intelligence_health()
+
+
+@app.get("/api/market-intelligence/sources")
+def api_market_intelligence_sources():
+    return {"sources": market_intelligence_health()["providers"]}
+
+
+@app.get("/api/market-intelligence/snapshot")
+def api_market_intelligence_snapshot(asset: str | None = None):
+    rows = load_snapshots()
+    if asset:
+        asset = asset.strip()
+        if not asset or len(asset) > 128 or any(ord(c) < 32 for c in asset):
+            raise HTTPException(400, "invalid asset")
+        rows = [row for row in rows
+                if row["asset"] == asset or row["canonical_asset"] == asset]
+    return {"snapshots": rows}
+
+
+@app.get("/api/market-intelligence/export")
+def api_market_intelligence_export():
+    return {"snapshots": load_snapshots()}
 
 
 

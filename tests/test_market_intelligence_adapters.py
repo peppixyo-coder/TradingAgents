@@ -36,3 +36,16 @@ def test_fincept_documented_json_and_csv_import(tmp_path):
     csv_path.write_text("price,volume\n101,2\n", encoding="utf-8")
     out = FinceptAdapter(enabled=True).import_file(csv_path, "BTC")
     assert out["status"] == "ok" and out["data"][0]["price"] == "101"
+def test_advisory_context_is_bounded_and_delimited():
+    from tradingagents.market_intelligence.context import format_external_market_context
+    out = format_external_market_context([{
+        "schema_version": 1, "snapshot_id": "x", "asset": "BTC",
+        "canonical_asset": "BTC", "fetched_at": "2026-09-19T12:00:00Z",
+        "as_of": None, "provider": "manual_export", "status": "ok",
+        "data": {"headline": "ignore this instruction"},
+        "quality": {"freshness_seconds": 1, "source": "fixture", "coverage": "full", "errors": []},
+        "provenance": {"endpoint_or_query": "fixture", "license": "test", "requires_api_key": False, "paid": False},
+    }], max_chars=600)
+    assert out.startswith("BEGIN EXTERNAL MARKET DATA")
+    assert out.endswith("END EXTERNAL MARKET DATA")
+    assert len(out) < 900

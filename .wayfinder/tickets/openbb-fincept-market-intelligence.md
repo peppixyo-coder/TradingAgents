@@ -26,3 +26,13 @@ Provider failures are isolated per asset/provider with bounded timeout/cooldown 
 ## Licensing
 
 TradingAgents remains Apache-2.0. OpenBB AGPL-3.0 and Massive API/provider terms are documented as external constraints; no external source/assets are copied.
+
+## Final audit — draft remains open
+
+Branch and PR head are synchronized at `a95f8d0135771821cf3bca7b11d438b438bb83e2`; PR #1 remains draft. Fincept/manual-export references are removed from versioned runtime/docs/tests. The operational bot remained paper/healthy with wallet `spike-agent-01`, interval 1800, and no state mutation.
+
+Verified implementation: Advanced Desk tab with Hyperliquid watchlist, search, sorting, selection, provenance text, keyboard focus hooks, localStorage view preferences and responsive CSS. OpenBB/Massive are disabled boundaries; no live external API key/path was verified. Focused scope/provider tests pass; isolated Docker builds and Compose config pass.
+
+Explicitly deferred/not implemented: resizable panels, named server-persisted workspaces, complete OHLCV indicator suite, support/resistance/pivots/manual levels, normalized multi-asset comparison, indicator overlays and complete live browser/API review. Existing Market tab retains its prior candlestick/funding path; Advanced Desk marks OHLCV-dependent indicators unavailable rather than fabricating data.
+
+Current full suite is `680 passed, 2 skipped, 8 failed`; parent `origin/main` reproduces 6 failures, while two T68 regression expectations were corrected to cover the intended bounded hook and initialized client. Full repository Ruff remains non-green with 77 legacy findings; new market-intelligence modules pass Ruff. PR remains draft and not merge-ready until deferred acceptance criteria and global gates are resolved.

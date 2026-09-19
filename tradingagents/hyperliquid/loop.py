@@ -301,6 +301,16 @@ def _resting_oids(c, cfg):
         log(f"[TP] frontendOpenOrders non disponibile: {e}")
         return None
 
+def _filled_oids(c, cfg):
+    """Return HyPaper close-fill oids; failure returns None (fail closed)."""
+    try:
+        fills = c._post("/info", {"type": "userFillsByTime",
+                                   "user": cfg.wallet, "startTime": 0})
+        return {str(f["oid"]) for f in fills if f.get("oid") is not None}
+    except Exception as e:
+        log(f"[TP] userFills non disponibile: {e}")
+        return None
+
 
 def maintain_tps(c, cfg, ex):
     """Cuore della scala TP: confronta |szi| clearinghouse con remaining_size,
@@ -316,12 +326,13 @@ def maintain_tps(c, cfg, ex):
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
     resting = _resting_oids(c, cfg)
     if resting is None:
-        # A-02 (audit): fail-closed. Senza l'insieme degli oid resting la
-        # membership-guard e' spenta e un QUAISI restringimento di posizione
-        # (drift/esterno) verrebbe marcato come fill TP -> falso TP1, stop a BE
-        # fantasma, remaining/PnL corrotti per sempre. Rimanda al prossimo
-        # pass (60s) invece di tirare a indovinare.
+        # Fail closed: senza il book non si può distinguere fill TP da drift.
         log(f"[TP] ATTENZIONE frontendOpenOrders non disponibile: "
+            f"rilevamento fill TP rimandato al prossimo pass")
+        return 0, 0
+    filled_oids = _filled_oids(c, cfg)
+    if filled_oids is None:
+        log(f"[TP] ATTENZIONE userFills non disponibile: "
             f"rilevamento fill TP rimandato al prossimo pass")
         return 0, 0
     fills = be_moves = 0
@@ -337,19 +348,22 @@ def maintain_tps(c, cfg, ex):
         rem = float(it["remaining_size"] or it["qty"])
         szi = live.get(it["coin"], 0.0)
         closed = rem - szi
-        eps = max(1e-12, rem * 1e-9)
         if szi <= eps:
-            # posizione sparita: NON marcare TP alla cieca (causa dei falsi
-            # tp-full). Stop ancora resting => uscita dai TP; altrimenti e'
-            # stop-out/esterno: reconcile archivia senza toccare i flag.
-            stop_live = resting is not None and it.get("stop_oid") \
-                and str(it["stop_oid"]) in resting
-            if not stop_live:
-                log(f"[TP] {it['coin']}: posizione piatta, TP non marcati "
-                    f"(stop-out/esterno; archivia reconcile)")
-                continue
+            verified = False
+            for n in planned:
+                oid_n = it.get(f"tp{n}_oid")
+                if not oid_n or str(oid_n) not in filled_oids:
+                    continue
+                store.intent_mark_tp(it["id"], n)
+                verified = True
+                fills += 1
+                log(f"[TP{n}] {it['coin']} VERIFIED FILL oid={oid_n}")
+            _cancel_resting_tps(ex, it, c, cfg)
+            log(f"[TP] {it['coin']}: posizione piatta; "
+                f"TP verificati={verified}; archivia reconcile")
+            continue
         if closed <= eps:
-            # nessun fill nuovo: ri-piazza eventuali livelli pianificati senza oid
+            # Nessun fill nuovo: ri-piazza livelli pianificati senza oid.
             for n in [n for n in planned if not it[f"tp{n}_oid"]]:
                 r = ex.place_limit(it["coin"], opp, float(it[f"tp{n}_size"]),
                                    float(it[f"tp{n}_px"]))
@@ -364,8 +378,8 @@ def maintain_tps(c, cfg, ex):
         for n in planned:                    # sequenziale: TP1 prima di TP2...
             sz_n = float(it[f"tp{n}_size"] or 0)
             oid_n = it[f"tp{n}_oid"]
-            if resting is not None and oid_n and str(oid_n) in resting:
-                break                        # ancora nel book: non ha fillato
+            if not oid_n or str(oid_n) not in filled_oids:
+                break                        # non fillato: non inferire
             if sz_n <= 0 or closed + eps < sz_n:
                 break                        # fill parziale: il resto al prox ciclo
             store.intent_mark_tp(it["id"], n)

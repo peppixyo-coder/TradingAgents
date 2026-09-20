@@ -40,3 +40,21 @@ def test_tab_navigation_toggles_matching_section_and_keeps_api_contract():
     # il CSS nasconde le section senza .on e mostra quelle con .on
     css = (ROOT / "dashboard/static/style.css").read_text(encoding="utf-8")
     assert "section{display:none}section.on{display:block}" in css.replace(" ", "")
+
+
+def test_analytics_chart_is_robust_to_empty_null_and_malformed_series():
+    js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+    # normalizzazione serie: coppie [t, v] -> {x, y} per datetime
+    assert "raw.filter(p => Array.isArray(p) && p[0] != null && p[1] != null" in js.replace(" ", "") \
+        or "raw.filter(p=>Array.isArray(p)&&p[0]!=null&&p[1]!=null" in js.replace(" ", "")
+    # scarto null/NaN
+    assert ".filter(p => Array.isArray(p) && p[0] != null && p[1] != null && !Number.isNaN(p[1]))" in js \
+        or ".filter(p=>Array.isArray(p)&&p[0]!=null&&p[1]!=null&&!Number.isNaN(p[1]))" in js
+    # serie tutte vuote -> emptyChart (niente crash Apex)
+    assert "if (normal.every(s => !s.data.length)) return emptyChart(id)" in js
+    # formatter y-axis safe per null/NaN (a-capo tollerato)
+    flat = re.sub(r"\s+", " ", js)
+    assert "v == null || Number.isNaN(v) ?" in flat and "—" in js
+    # nessun endpoint di trading introdotto e API invariata
+    assert "/api/indicators/" in js
+    assert "POST" not in js and "PUT" not in js and "DELETE" not in js

@@ -425,6 +425,18 @@ let apexInstances = {};
 function chart(id, { series, type, colors, x, min, max }) {
   if (apexInstances[id]) apexInstances[id].destroy();
   const palette = ["#26A69A", "#EF5350", "#4C8DFF", "#E8B341"];
+  // robusto: normalizza ogni serie Apex.
+  // category (x fornita): valori numerici, null scartati -> stringa "—" via formatter.
+  // datetime (x assente): serie di coppie [t, v] -> {x, y}; scarta punti null/NaN.
+  const normal = series.map(s => {
+    const raw = Array.isArray(s.data) ? s.data : [];
+    const data = x
+      ? raw.filter(v => v != null && !Number.isNaN(v))
+      : raw.filter(p => Array.isArray(p) && p[0] != null && p[1] != null && !Number.isNaN(p[1]))
+          .map(p => ({ x: p[0], y: p[1] }));
+    return { ...s, data };
+  });
+  if (normal.every(s => !s.data.length)) return emptyChart(id);
   const options = {
     chart: { type: type === "area" ? "area" : type, height: 260, background: "transparent",
       fontFamily: "IBM Plex Mono, monospace", toolbar: { show: false }, animations: { enabled: false },
@@ -435,13 +447,14 @@ function chart(id, { series, type, colors, x, min, max }) {
     fill: type === "area" ? { type: "gradient", opacity: [.25, 0] } :
       type === "bar" ? { opacity: .8 } : {},
     dataLabels: { enabled: false },
-    xaxis: { type: x ? "category" : "datetime", categories: x,
+    xaxis: { type: x ? "category" : "datetime", categories: x || [],
       labels: { style: { fontSize: "10px" } }, axisBorder: { show: false } },
-    yaxis: { min, max, labels: { formatter: v => Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : (+v).toFixed(1) } },
+    yaxis: { min, max, labels: { formatter: v => v == null || Number.isNaN(v)
+      ? "—" : Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : (+v).toFixed(1) } },
     grid: { borderColor: "#1F2630" },
     tooltip: { theme: "dark" },
     legend: { show: false },
-    series,
+    series: normal,
   };
   apexInstances[id] = new ApexCharts($("#" + id), options);
   apexInstances[id].render();

@@ -735,6 +735,21 @@ def api_candles(coin: str, interval: str = "1h", hours: int = 48):
         raise HTTPException(502, str(e))
 
 
+@app.get("/api/ohlcv/{coin}")
+def api_ohlcv(coin: str, interval: str = "1h", hours: int = 48):
+    from tradingagents.market_intelligence.ohlcv import normalize_series
+
+    if not coin.strip() or len(coin) > 128 or hours < 1 or hours > 2_000:
+        raise HTTPException(400, "invalid OHLCV request")
+    try:
+        rows = agg.c.candles(coin, interval, hours * 3600 * 1000)
+        return normalize_series(coin, interval, rows, source="hyperliquid")
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, "Hyperliquid OHLCV unavailable") from e
+
+
 @app.get("/api/l2book/{coin}")
 def api_l2book(coin: str):
     try:

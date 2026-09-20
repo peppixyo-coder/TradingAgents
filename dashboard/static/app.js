@@ -691,6 +691,7 @@ function exportCsv() {
 function switchTab(name) {
   S.tab = name;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  $$("main > section").forEach(s => s.classList.toggle("on", s.id === "tab-" + name));
   ({ overview: renderOverview, trades: renderTrades, analytics: renderAnalytics,
      agents: renderAgents, market: renderMarket, "advanced-desk": renderAdvancedDesk, system: renderSystem })[name]?.();
 }

@@ -599,11 +599,50 @@ function renderAdvancedDesk() {
   });
   $("#desk-count").textContent = `${rows.length}/${S.market.length} assets`; $("#desk-empty").hidden = rows.length > 0;
 }
-function selectDeskAsset(r) {
-  $("#desk-title").textContent = r.coin; $("#desk-status").textContent = "live · Hyperliquid"; $("#desk-detail-body").replaceChildren();
-  [["Mark", px(r.mark)], ["24h", pct(r.chg24h)], ["Volume", usd(r.vol24h)], ["Open interest", usd(r.oi)], ["Funding", pct(r.fundingAnn)], ["Spread", r.spread == null ? "—" : `${r.spread} bps`]].forEach(([k, v]) => { const row = document.createElement("div"); row.className = "desk-stat"; const key = document.createElement("b"); key.textContent = k; const val = document.createElement("span"); val.textContent = v; row.append(key, val); $("#desk-detail-body").append(row); });
-  $("#desk-source").lastElementChild.textContent = "Source: Hyperliquid metrics · current frame · OHLCV-dependent indicators unavailable here.";
-  $$("#desk-table tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.coin === r.coin));
+async function selectDeskAsset(r) {
+  const coin = r.coin;
+  const interval = $("#desk-timeframe")?.value || "1h";
+  S.apCoin = coin;
+  $("#desk-title").textContent = `${coin} · ${interval}`;
+  $("#desk-status").textContent = "loading";
+  $("#desk-state").textContent = "Loading Hyperliquid data…";
+  $("#desk-chart").replaceChildren();
+  $("#desk-indicators").replaceChildren();
+  try {
+    const response = await apiFetch(`/api/indicators/${encodeURIComponent(coin)}?interval=${interval}&hours=48`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderDeskData(data);
+  } catch (error) {
+    $("#desk-status").textContent = "error";
+    $("#desk-state").textContent = `Unable to load ${coin}: ${error.message}`;
+    $("#desk-chart").innerHTML = "<p class='empty'>No chart data available.</p>";
+  }
+  $$("#desk-table tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.coin === coin));
+}
+
+function renderDeskData(data) {
+  const candles = Array.isArray(data.candles) ? data.candles : [];
+  $("#desk-status").textContent = data.status || "unavailable";
+  $("#desk-state").textContent = candles.length
+    ? `${data.source} · ${data.timeframe} · as of ${data.as_of || "—"} · freshness ${ago(data.fetched_at)}`
+    : (data.errors || ["No candle data available."]).join("; ");
+  const chart = $("#desk-chart"); chart.replaceChildren();
+  if (candles.length && window.LightweightCharts) {
+    const instance = LightweightCharts.createChart(chart, { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8B94A3" } });
+    const series = instance.addCandlestickSeries({ upColor: "#26A69A", downColor: "#EF5350", borderVisible: false, wickUpColor: "#26A69A", wickDownColor: "#EF5350" });
+    series.setData(candles.map(c => ({ time: Math.floor(c.t / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
+    const volume = candles.filter(c => c.volume != null);
+    if (volume.length) { const volumeSeries = instance.addHistogramSeries({ priceScaleId: "volume", priceFormat: { type: "volume" }, scaleMargins: { top: .8, bottom: 0 } }); volumeSeries.setData(volume.map(c => ({ time: Math.floor(c.t / 1000), value: c.volume, color: "#3C8D82" }))); }
+  } else chart.innerHTML = "<p class='empty'>No chart data available.</p>"
+  $("#desk-candle-table tbody").innerHTML = candles.slice(-24).map(c => `<tr><td>${new Date(c.t).toISOString()}</td><td>${px(c.open)}</td><td>${px(c.high)}</td><td>${px(c.low)}</td><td>${px(c.close)}</td><td>${c.volume == null ? "—" : num(c.volume, 2)}</td></tr>`).join("");
+  const labels = { rsi: "RSI", macd: "MACD", stochastic: "Stochastic", atr: "ATR", bollinger: "Bollinger Bands", volatility: "Volatility" };
+  $("#desk-indicators").innerHTML = Object.entries(data.indicators || {}).map(([name, item]) => {
+    const last = [...(item.values || [])].reverse().find(v => v.value != null);
+    const value = last ? JSON.stringify(last.value) : (item.errors || ["warm-up / unavailable"])[0];
+    return `<section class="desk-indicator"><h3>${labels[name] || name} · ${item.status}</h3><p>${value}</p></section>`;
+  }).join("");
+  $("#desk-source").lastElementChild.textContent = `${data.source} · provider ${data.provider} · coverage ${data.coverage} · fetched ${data.fetched_at || "—"}`;
 }
 
 /* ---------- system ---------- */
@@ -656,6 +695,7 @@ function switchTab(name) {
      agents: renderAgents, market: renderMarket, "advanced-desk": renderAdvancedDesk, system: renderSystem })[name]?.();
 }
 document.addEventListener("DOMContentLoaded", () => {
+  $("#desk-timeframe").onchange = () => { if (S.apCoin) { const row = S.market.find(item => item.coin === S.apCoin); if (row) selectDeskAsset(row); } };
   restoreDeskState();
   $$('nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
   $("#desk-search").oninput = () => { saveDeskState(); renderAdvancedDesk(); };

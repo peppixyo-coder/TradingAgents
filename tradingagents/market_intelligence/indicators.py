@@ -303,6 +303,7 @@ def compute_all(series: Mapping[str, Any], *, period: int = 14, fast: int = 12,
     common = {key: series.get(key) for key in (
         "asset", "canonical_asset", "timeframe", "source", "provider", "fetched_at",
         "as_of", "freshness_seconds", "coverage")}
+    common["candles"] = candles
     common["status"] = series.get("status", "unavailable")
     results: dict[str, Any] = {}
     calls = {

@@ -145,5 +145,13 @@ tr.adm > td{opacity:.55}
 .desk-source { border-top:1px solid var(--line); padding-top:.8rem; display:grid; gap:.35rem; color:var(--muted); font-size:.75rem; }
 @media (max-width: 900px) { .desk-grid { grid-template-columns:1fr; } .desk-table-wrap { max-height:none; } }
 @media (max-width: 420px) { .desk-toolbar { align-items:stretch; } .desk-toolbar input, .desk-toolbar select, .desk-toolbar button { width:100%; } .desk-detail-body { grid-template-columns:1fr; } }
+.desk-chart { height: 320px; min-height: 220px; margin: .75rem 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.desk-chart-table-wrap { max-height: 180px; overflow: auto; margin-bottom: .8rem; }
+.desk-chart-table-wrap caption { text-align: left; color: var(--muted); padding: .4rem 0; }
+.desk-indicators { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .5rem; }
+.desk-indicator { background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: .55rem; min-width: 0; }
+.desk-indicator h3 { font-size: .72rem; color: var(--muted); margin-bottom: .3rem; }
+.desk-indicator p { font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .desk-indicators { grid-template-columns: 1fr; } .desk-chart { height: 250px; } }
 html,body{overflow-x:hidden}
 @media(max-width:700px){.kpis{gap:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.kpi{min-width:0}.kpi b,.kpi small{overflow-wrap:anywhere}.tbl{min-width:0}}

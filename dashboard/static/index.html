@@ -162,6 +162,8 @@
     <input id="desk-search" type="search" placeholder="BTC, ETHFI…" autocomplete="off">
     <label for="desk-sort">Sort</label>
     <select id="desk-sort"><option value="coin">Asset</option><option value="vol24h">Volume</option><option value="oi">Open interest</option><option value="chg24h">24h change</option></select>
+    <label for="desk-timeframe">Timeframe</label>
+    <select id="desk-timeframe"><option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option></select>
     <button class="ghost" id="desk-reset" type="button">Reset view</button>
   </div>
   <div class="desk-grid">
@@ -172,8 +174,11 @@
     </div>
     <div class="card desk-detail" aria-live="polite">
       <div class="card-h"><h2 id="desk-title">Select an asset</h2><span class="chip" id="desk-status">unavailable</span></div>
-      <div id="desk-detail-body" class="desk-detail-body"><p class="empty">Choose an asset to inspect its current read-only market context.</p></div>
-      <div class="desk-source" id="desk-source"><strong>Data provenance</strong><span>Hyperliquid metrics arrive with the existing metrics frame.</span></div>
+      <p id="desk-state" class="empty" role="status">Choose an asset to inspect its read-only market context.</p>
+      <div id="desk-chart" class="desk-chart" role="img" aria-label="Candlestick chart; equivalent data is listed below"><p class="empty">No chart data loaded.</p></div>
+      <div class="desk-chart-table-wrap"><table class="tbl" id="desk-candle-table"><caption>Recent OHLCV values</caption><thead><tr><th>Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody></tbody></table></div>
+      <div id="desk-indicators" class="desk-indicators"></div>
+      <div class="desk-source" id="desk-source"><strong>Data provenance</strong><span>Hyperliquid data loads on asset selection.</span></div>
     </div>
   </div>
 </section>

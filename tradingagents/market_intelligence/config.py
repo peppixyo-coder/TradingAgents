@@ -19,3 +19,8 @@ def settings() -> dict[str, object]:
         "timeout_s": min(max(float(os.getenv("MASSIVE_TIMEOUT_S", "5")), 0.1), 30),
         "cache_ttl_s": min(max(int(os.getenv("MASSIVE_CACHE_TTL_S", "300")), 1), 3600),
     }
+
+
+def massive_api_key() -> str:
+    """Read Massive credentials only when a caller explicitly requests them."""
+    return os.getenv("MASSIVE_API_KEY", "")

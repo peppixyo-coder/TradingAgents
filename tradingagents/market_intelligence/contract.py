@@ -28,7 +28,7 @@ class SnapshotStatus(str, Enum):
     UNSUPPORTED = "unsupported"
     UNAVAILABLE = "unavailable"
     ERROR = "error"
-
+    NOT_CONFIGURED = "not configured"
 
 @dataclass(frozen=True)
 class ExternalSnapshot:

@@ -1,11 +1,22 @@
 """Optional read-only adapters; no trading or operational-state authority."""
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
-from .contract import SnapshotStatus, deterministic_snapshot_id, validate_snapshot
+from .config import massive_api_key
+from .contract import (
+    MAX_SNAPSHOT_BYTES,
+    SnapshotStatus,
+    deterministic_snapshot_id,
+    validate_snapshot,
+)
 
 
 class AdapterError(RuntimeError):
@@ -89,50 +100,94 @@ class OpenBBAdapter:
             return unavailable(asset, self.provider, type(exc).__name__)
 
 class MassiveAdapter:
-    """Optional REST boundary; callers must provide verified symbol mapping/fetcher."""
+    """Lazy, read-only Massive crypto snapshot boundary.
+
+    ``SUPPORTED_ASSETS`` is deliberately empty until a mapping is verified.
+    The optional fetcher exists only for offline fixtures and receives the
+    documented ticker; the real transport is created inside ``snapshot``.
+    """
 
     provider = "massive"
+    SUPPORTED_ASSETS: dict[str, str] = {}
+    endpoint_template = "/v2/snapshot/locale/global/markets/crypto/tickers/{ticker}"
 
-    def __init__(self, *, enabled: bool = False, timeout_s: float = 5.0):
+    def __init__(self, *, enabled: bool = False, timeout_s: float = 5.0,
+                 base_url: str = "https://api.massive.com"):
         self.enabled = enabled
         self.timeout_s = max(0.1, min(float(timeout_s), 30.0))
+        self.base_url = base_url.rstrip("/")
+
+    def _snapshot(self, asset: str, status: SnapshotStatus, reason: str,
+                  *, data: Mapping[str, Any] | None = None,
+                  symbol: str | None = None, as_of: str | None = None,
+                  freshness: float | None = None) -> dict[str, Any]:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        return validate_snapshot({
+            "schema_version": 1,
+            "snapshot_id": deterministic_snapshot_id(asset, self.provider, now),
+            "asset": asset, "canonical_asset": asset,
+            "fetched_at": now, "as_of": as_of, "provider": self.provider,
+            "status": status.value, "data": dict(data or {}),
+            "quality": {"freshness_seconds": freshness, "source": self.provider,
+                        "coverage": "partial" if data else "none",
+                        "errors": [reason[:500]] if reason else []},
+            "provenance": {
+                "endpoint_or_query": self._provenance(symbol),
+                "license": "Massive terms", "requires_api_key": True, "paid": True,
+            },
+        }, allow_stale=True)
+
+    def _provenance(self, symbol: str | None) -> str:
+        path = self.endpoint_template.format(ticker=quote(symbol or "", safe=""))
+        return f"GET {self.base_url}{path} (query credentials redacted)"
+
+    def _fetch(self, symbol: str) -> Mapping[str, Any]:
+        key = massive_api_key()
+        query = urlencode({"apiKey": key})
+        url = f"{self.base_url}{self.endpoint_template.format(ticker=quote(symbol, safe=''))}?{query}"
+        with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=self.timeout_s) as response:
+            raw = response.read(64_001)
+        if len(raw) > 64_000:
+            raise ValueError("response exceeds maximum size")
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError("malformed response")
+        return payload
 
     def snapshot(self, asset: str, *, symbol: str | None = None,
                  fetcher: Callable[[str], Mapping[str, Any]] | None = None) -> dict[str, Any]:
         if not self.enabled:
-            return unavailable(asset, self.provider, "not configured")
-        if not symbol or fetcher is None:
-            return validate_snapshot({
-                "schema_version": 1,
-                "snapshot_id": deterministic_snapshot_id(asset, self.provider, "unsupported"),
-                "asset": asset, "canonical_asset": asset,
-                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "as_of": None, "provider": self.provider,
-                "status": SnapshotStatus.UNSUPPORTED.value, "data": {},
-                "quality": {"freshness_seconds": None, "source": "massive",
-                            "coverage": "none", "errors": ["verified symbol mapping required"]},
-                "provenance": {"endpoint_or_query": "redacted", "license": "Massive terms",
-                                "requires_api_key": True, "paid": True},
-            })
+            return self._snapshot(asset, SnapshotStatus.UNAVAILABLE, "disabled")
+        resolved = symbol or self.SUPPORTED_ASSETS.get(asset)
+        if not resolved:
+            return self._snapshot(asset, SnapshotStatus.UNSUPPORTED,
+                                  "verified symbol mapping required")
+        if fetcher is None and not massive_api_key():
+            return self._snapshot(asset, SnapshotStatus.NOT_CONFIGURED,
+                                  "MASSIVE_API_KEY not configured", symbol=resolved)
         try:
-            started = time.monotonic()
-            data = fetcher(symbol)
-            if time.monotonic() - started > self.timeout_s:
-                return unavailable(asset, self.provider, "timeout")
-            if not isinstance(data, Mapping):
-                return unavailable(asset, self.provider, "malformed response")
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            return validate_snapshot({
-                "schema_version": 1,
-                "snapshot_id": deterministic_snapshot_id(asset, self.provider, now),
-                "asset": asset, "canonical_asset": asset, "fetched_at": now,
-                "as_of": data.get("as_of"), "provider": self.provider,
-                "status": SnapshotStatus.OK.value, "data": data,
-                "quality": {"freshness_seconds": 0, "source": "massive",
-                            "coverage": "partial", "errors": []},
-                "provenance": {"endpoint_or_query": "redacted", "license": "Massive terms",
-                                "requires_api_key": True, "paid": True},
-            })
-        except Exception as exc:
-            return unavailable(asset, self.provider, type(exc).__name__)
+            payload = fetcher(resolved) if fetcher else self._fetch(resolved)
+            if len(json.dumps(payload, separators=(",", ":"), default=str).encode()) > MAX_SNAPSHOT_BYTES:
+                raise ValueError("response exceeds maximum size")
+            ticker = payload.get("ticker") if isinstance(payload, Mapping) else None
+            if not isinstance(ticker, Mapping) or not ticker:
+                return self._snapshot(asset, SnapshotStatus.UNAVAILABLE,
+                                      "empty or malformed response", symbol=resolved)
+            updated = ticker.get("updated")
+            if not isinstance(updated, (int, float)) or updated <= 0:
+                return self._snapshot(asset, SnapshotStatus.ERROR,
+                                      "timestamp missing or invalid", symbol=resolved)
+            as_of = datetime.fromtimestamp(updated / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+            freshness = max(0.0, time.time() - updated / 1000)
+            status = SnapshotStatus.STALE if freshness > self.timeout_s * 60 else SnapshotStatus.OK
+            return self._snapshot(asset, status, "stale snapshot" if status is SnapshotStatus.STALE else "",
+                                  data={"symbol": ticker.get("ticker", resolved), "ticker": dict(ticker)},
+                                  symbol=resolved, as_of=as_of, freshness=freshness)
+        except HTTPError as exc:
+            status = SnapshotStatus.UNAVAILABLE if exc.code in {401, 403, 429, 503} else SnapshotStatus.ERROR
+            return self._snapshot(asset, status, f"HTTP {exc.code}", symbol=resolved)
+        except (TimeoutError, URLError, OSError):
+            return self._snapshot(asset, SnapshotStatus.UNAVAILABLE, "network or timeout", symbol=resolved)
+        except (ValueError, json.JSONDecodeError, TypeError):
+            return self._snapshot(asset, SnapshotStatus.ERROR, "malformed response", symbol=resolved)
 

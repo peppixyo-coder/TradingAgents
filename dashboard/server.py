@@ -771,6 +771,15 @@ def api_market_intelligence_snapshot(asset: str | None = None):
     return {"snapshots": rows}
 
 
+@app.get("/api/market-intelligence/aggregate")
+def api_market_intelligence_aggregate(asset: str):
+    from tradingagents.market_intelligence.aggregation import aggregate_snapshot
+    rows = load_snapshots()
+    selected = [row for row in rows if row["asset"] == asset or row["canonical_asset"] == asset]
+    primary = next((r for r in selected if r["provider"] == "hyperliquid"), None)
+    return aggregate_snapshot(asset, primary, selected)
+
+
 @app.get("/api/market-intelligence/export")
 def api_market_intelligence_export():
     return {"snapshots": load_snapshots()}

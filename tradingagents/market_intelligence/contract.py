@@ -99,9 +99,12 @@ def validate_snapshot(raw: Mapping[str, Any], *, allow_stale: bool = False) -> d
     if raw["schema_version"] != SCHEMA_VERSION:
         raise ValueError("unsupported snapshot schema_version")
     asset = raw["asset"]
+    canonical = raw["canonical_asset"]
     provider = raw["provider"]
     if not isinstance(asset, str) or not asset.strip() or len(asset) > 128:
         raise ValueError("asset must be bounded text")
+    if not isinstance(canonical, str) or not canonical.strip() or len(canonical) > 128:
+        raise ValueError("canonical_asset must be bounded text")
     if not isinstance(provider, str) or not provider.strip() or len(provider) > 64:
         raise ValueError("provider must be bounded text")
     status = SnapshotStatus(raw["status"])
@@ -113,6 +116,8 @@ def validate_snapshot(raw: Mapping[str, Any], *, allow_stale: bool = False) -> d
         raise ValueError("freshness_seconds must be a non-negative number")
     if status == SnapshotStatus.STALE and not allow_stale:
         raise ValueError("stale snapshot requires allow_stale=True")
+    if status == SnapshotStatus.UNSUPPORTED and quality.get("coverage") != "none":
+        raise ValueError("unsupported snapshot must have no coverage")
     result = {
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": str(raw["snapshot_id"])[:128],

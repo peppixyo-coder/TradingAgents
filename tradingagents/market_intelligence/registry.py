@@ -23,6 +23,48 @@ def load_snapshots(path: str | None = None) -> list[dict[str, Any]]:
         return []
 
 
+def collect_snapshots(asset: str, *, hyperliquid: dict[str, Any] | None = None,
+                      openbb: Any = None, massive: Any = None) -> list[dict[str, Any]]:
+    """Collect advisory snapshots lazily; never runs during import/startup."""
+    rows = []
+    if hyperliquid is not None:
+        rows.append(validate_snapshot(hyperliquid, allow_stale=True))
+    cfg = settings()
+    if cfg["openbb_enabled"]:
+        adapter = openbb or _openbb_adapter(cfg)
+        rows.append(validate_snapshot(adapter.snapshot(asset), allow_stale=True))
+    if cfg["massive_enabled"]:
+        adapter = massive or _massive_adapter(cfg)
+        rows.append(validate_snapshot(adapter.snapshot(asset), allow_stale=True))
+    return rows
+
+
+def _openbb_adapter(cfg: dict[str, object]):
+    from .adapters import OpenBBAdapter
+    return OpenBBAdapter(enabled=True, timeout_s=float(cfg["timeout_s"]))
+
+
+def _massive_adapter(cfg: dict[str, object]):
+    from .adapters import MassiveAdapter
+    return MassiveAdapter(enabled=True, timeout_s=float(cfg["timeout_s"]),
+                          base_url=str(cfg["massive_base_url"]))
+
+
+def advisory_snapshots(asset: str) -> list[dict[str, Any]]:
+    """Load snapshots and invoke enabled providers only on dashboard request."""
+    rows = load_snapshots()
+    primary = next((row for row in rows if row["asset"] == asset
+                    and row["provider"] == "hyperliquid"), None)
+    external = [row for row in rows if row is not primary]
+    cfg = settings()
+    return external + collect_snapshots(
+        asset,
+        hyperliquid=primary,
+        openbb=_openbb_adapter(cfg) if cfg["openbb_enabled"] else None,
+        massive=_massive_adapter(cfg) if cfg["massive_enabled"] else None,
+    )
+
+
 def health() -> dict[str, Any]:
     cfg = settings()
     snaps = load_snapshots()

@@ -26,8 +26,11 @@ from tradingagents.hyperliquid import store
 from tradingagents.hyperliquid.config import load
 from tradingagents.hyperliquid.data import DataError, HyPaperClient
 from tradingagents.hyperliquid.loop import equity, load_dotenv
-from tradingagents.market_intelligence.registry import health as market_intelligence_health
-from tradingagents.market_intelligence.registry import load_snapshots
+from tradingagents.market_intelligence.registry import (
+    advisory_snapshots,
+    health as market_intelligence_health,
+    load_snapshots,
+)
 
 load_dotenv()
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -774,10 +777,19 @@ def api_market_intelligence_snapshot(asset: str | None = None):
 @app.get("/api/market-intelligence/aggregate")
 def api_market_intelligence_aggregate(asset: str):
     from tradingagents.market_intelligence.aggregation import aggregate_snapshot
-    rows = load_snapshots()
-    selected = [row for row in rows if row["asset"] == asset or row["canonical_asset"] == asset]
-    primary = next((r for r in selected if r["provider"] == "hyperliquid"), None)
-    return aggregate_snapshot(asset, primary, selected)
+    from tradingagents.market_intelligence.context import format_external_market_context
+
+    asset = asset.strip()
+    if not asset or len(asset) > 128 or any(ord(c) < 32 for c in asset):
+        raise HTTPException(400, "invalid asset")
+    rows = advisory_snapshots(asset)
+    primary = next((r for r in rows if r["provider"] == "hyperliquid"), None)
+    result = aggregate_snapshot(asset, primary, rows)
+    result["context"] = format_external_market_context(rows)
+    result["sources"] = [{"provider": row["provider"], "status": row["status"],
+                          "provenance": row["provenance"], "quality": row["quality"]}
+                         for row in rows]
+    return result
 
 
 @app.get("/api/market-intelligence/export")

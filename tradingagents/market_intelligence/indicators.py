@@ -290,3 +290,42 @@ def volatility(candles, period=24, *, timeframe="1h", source="hyperliquid"):
         },
         "values": _aligned(values, ts),
     }
+
+
+INDICATOR_NAMES = ("sma", "ema", "vwap", "rsi", "macd", "stochastic", "atr", "bollinger", "volatility")
+
+
+def compute_all(series: Mapping[str, Any], *, period: int = 14, fast: int = 12,
+                slow: int = 26, signal: int = 9, smooth: int = 3,
+                deviations: float = 2.0) -> dict[str, Any]:
+    """Compute all dashboard indicators while preserving validated series metadata."""
+    candles = series.get("candles", [])
+    common = {key: series.get(key) for key in (
+        "asset", "canonical_asset", "timeframe", "source", "provider", "fetched_at",
+        "as_of", "freshness_seconds", "coverage")}
+    common["status"] = series.get("status", "unavailable")
+    results: dict[str, Any] = {}
+    calls = {
+        "sma": lambda: sma(candles, period), "ema": lambda: ema(candles, period),
+        "vwap": lambda: vwap(candles, period), "rsi": lambda: rsi(candles, period),
+        "macd": lambda: macd(candles, fast, slow, signal),
+        "stochastic": lambda: stochastic(candles, period, smooth),
+        "atr": lambda: atr(candles, period),
+        "bollinger": lambda: bollinger(candles, period, deviations),
+        "volatility": lambda: volatility(candles, period, timeframe=series.get("timeframe", "")),
+    }
+    errors = list(series.get("errors", []))
+    for name in INDICATOR_NAMES:
+        try:
+            item = calls[name]()
+            results[name] = {"parameters": item["parameters"], "values": item["values"],
+                             "status": item["status"], "errors": item["errors"]}
+        except (TypeError, ValueError, ZeroDivisionError) as exc:
+            results[name] = {"parameters": {}, "values": [], "status": "error",
+                             "errors": [str(exc)[:300]]}
+            errors.append(f"{name}: {exc}"[:300])
+    if common["status"] == "ok" and any(item["status"] == "error" for item in results.values()):
+        common["status"] = "partial"
+    common["errors"] = errors[:20]
+    common["indicators"] = results
+    return common

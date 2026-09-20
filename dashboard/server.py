@@ -750,6 +750,32 @@ def api_ohlcv(coin: str, interval: str = "1h", hours: int = 48):
         raise HTTPException(502, "Hyperliquid OHLCV unavailable") from e
 
 
+
+
+@app.get("/api/indicators/{coin}")
+def api_indicators(coin: str, interval: str = "1h", hours: int = 48,
+                   period: int = 14, fast: int = 12, slow: int = 26,
+                   signal: int = 9, smooth: int = 3, deviations: float = 2.0):
+    from tradingagents.market_intelligence.indicators import compute_all
+    from tradingagents.market_intelligence.ohlcv import SUPPORTED_TIMEFRAMES, normalize_series
+
+    if (not coin.strip() or len(coin) > 128 or interval not in SUPPORTED_TIMEFRAMES
+            or hours < 1 or hours > 2_000):
+        raise HTTPException(400, "invalid indicators request")
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2_000
+           for value in (period, fast, slow, signal, smooth)) or fast >= slow:
+        raise HTTPException(400, "invalid indicator period")
+    if not isinstance(deviations, (int, float)) or not 0 < deviations <= 10:
+        raise HTTPException(400, "invalid Bollinger deviations")
+    try:
+        rows = agg.c.candles(coin, interval, hours * 3600 * 1000)
+        series = normalize_series(coin, interval, rows, source="hyperliquid")
+        return compute_all(series, period=period, fast=fast, slow=slow,
+                           signal=signal, smooth=smooth, deviations=deviations)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, "Hyperliquid indicators unavailable") from e
 @app.get("/api/l2book/{coin}")
 def api_l2book(coin: str):
     try:

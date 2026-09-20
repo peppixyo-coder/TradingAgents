@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 MAX_OHLCV_POINTS = 2_000
-SUPPORTED_TIMEFRAMES = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
-MAX_FRESHNESS_SECONDS = {"1m": 300, "5m": 900, "15m": 2700, "1h": 10_800,
-                         "4h": 43_200, "1d": 172_800}
+# Verified by HyPaperClient.candles/candles_cached callers: only these intervals
+# are exercised by the repository's Hyperliquid path.
+SUPPORTED_TIMEFRAMES = frozenset({"1h", "4h", "1d"})
+MAX_FRESHNESS_SECONDS = {"1h": 10_800, "4h": 43_200, "1d": 172_800}
 
 
 def _redact(reason: str) -> str:

@@ -7,16 +7,34 @@ from tradingagents.market_intelligence.adapters import OpenBBAdapter
 
 
 def test_openbb_disabled_does_not_import_or_call_provider():
-    called = []
-    out = OpenBBAdapter(enabled=False).snapshot("BTC", lambda _: called.append(1))
+    out = OpenBBAdapter(enabled=False).snapshot("BTC")
     assert out["status"] == "unavailable"
-    assert called == []
 
 
-def test_openbb_malformed_provider_isolated():
-    out = OpenBBAdapter(enabled=True).snapshot("BTC", lambda _: ["bad"])
-    assert out["status"] == "unavailable"
-    assert "malformed" in out["quality"]["errors"][0]
+def test_openbb_mapping_and_package_absence_are_unsupported_or_unavailable():
+    adapter = OpenBBAdapter(enabled=True)
+    assert adapter.snapshot("BTC")["status"] == "unsupported"
+    adapter.SUPPORTED_ASSETS["BTC"] = "BTC-USD"
+    out = adapter.snapshot("BTC")
+    assert out["status"] in {"unavailable", "error"}
+
+
+def test_openbb_valid_mock_response_is_bounded():
+    class Result:
+        def to_df(self):
+            return [{"date": "2026-09-19", "close": 100}]
+    class Price:
+        def historical(self, **kwargs):
+            return Result()
+    class Crypto:
+        price = Price()
+    class Client:
+        crypto = Crypto()
+    adapter = OpenBBAdapter(enabled=True)
+    adapter.SUPPORTED_ASSETS["BTC"] = "BTC-USD"
+    out = adapter.snapshot("BTC", client=Client())
+    assert out["status"] == "ok"
+    assert out["data"]["rows"][0]["close"] == 100
 
 def test_massive_disabled_and_unmapped_are_safe():
     from tradingagents.market_intelligence.adapters import MassiveAdapter

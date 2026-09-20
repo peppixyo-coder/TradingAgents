@@ -145,11 +145,22 @@ def test_response_choices_or_content_malformed(body):
 
 
 @pytest.mark.parametrize("status", [401, 429, 503])
-def test_http_provider_errors_are_not_skipped_or_retried(offline_server, status):
-    _Handler.status = status
-    response = _post(offline_server, "test-key", "Combo-1", [{"role": "user", "content": "OK"}])
+def test_http_provider_errors_are_not_skipped_or_retried(status):
+    class Response:
+        status_code = status
+
+    class Session:
+        calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.calls += 1
+            return Response()
+
+    session = Session()
+    response = _post("http://local-fixture", "test-key", "Combo-1",
+                     [{"role": "user", "content": "OK"}], session=session)
     assert response.status_code == status
-    assert _Handler.requests_seen == 1
+    assert session.calls == 1
 
 
 def test_timeout_is_single_bounded_call(monkeypatch):

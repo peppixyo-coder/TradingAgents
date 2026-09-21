@@ -155,3 +155,10 @@ tr.adm > td{opacity:.55}
 @media (max-width: 700px) { .desk-indicators { grid-template-columns: 1fr; } .desk-chart { height: 250px; } }
 html,body{overflow-x:hidden}
 @media(max-width:700px){.kpis{gap:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.kpi{min-width:0}.kpi b,.kpi small{overflow-wrap:anywhere}.tbl{min-width:0}}
+.desk-compare { margin-top: 1rem; }
+.desk-compare-controls { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; margin-bottom:.75rem; }
+.desk-compare-select { display:flex; gap:.8rem; flex-wrap:wrap; }
+.desk-compare-option { color:var(--muted); font-size:.8rem; cursor:pointer; }
+.desk-compare-option input:focus-visible, .desk-compare button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.desk-compare-chart { height:280px; min-height:210px; margin:.5rem 0 .75rem; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+@media(max-width:700px){.desk-compare-controls{align-items:stretch}.desk-compare-select{width:100%}.desk-compare-controls button{width:100%}.desk-compare-chart{height:240px}}

@@ -182,6 +182,17 @@
       <div class="desk-source" id="desk-source"><strong>Data provenance</strong><span>Hyperliquid data loads on asset selection.</span></div>
     </div>
   </div>
+  <div id="desk-compare" class="card desk-compare" aria-live="polite">
+    <div class="card-h"><h2>Confronto multi-asset advisory</h2><span class="hint">Indice relativo, base 100</span></div>
+    <div class="desk-compare-controls" role="group" aria-label="Asset del confronto">
+      <div id="desk-compare-select" class="desk-compare-select"></div>
+      <button class="ghost" id="desk-compare-run" type="button">Aggiorna confronto</button>
+      <button class="ghost" id="desk-compare-reset" type="button" aria-label="Reimposta vista confronto">Reimposta vista</button>
+    </div>
+    <p id="desk-compare-state" class="empty" role="status">Seleziona almeno due asset.</p>
+    <div id="desk-compare-chart" class="desk-compare-chart" role="img" aria-label="Grafico indice relativo multi-asset"><p class="empty">Nessun confronto caricato.</p></div>
+    <div id="desk-compare-table-wrap" class="desk-chart-table-wrap"><table class="tbl" id="desk-compare-table"><caption>Valori indice relativo, base 100</caption><thead></thead><tbody></tbody></table></div>
+  </div>
 </section>
 <section id="tab-system">
   <div class="grid c-3">

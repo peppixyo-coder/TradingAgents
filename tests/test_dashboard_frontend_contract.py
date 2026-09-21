@@ -71,3 +71,19 @@ def test_advanced_desk_chart_exposes_native_interactions_and_reset_control():
     assert "S.charts.desk" in js
     assert "/api/indicators/" in js
     assert "POST" not in js and "PUT" not in js and "DELETE" not in js
+
+
+def test_advanced_desk_multi_asset_comparison_contract_is_bounded_and_safe():
+    html = (ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+    assert 'id="desk-compare"' in html
+    assert 'id="desk-compare-chart"' in html
+    assert 'id="desk-compare-table"' in html
+    assert 'Indice relativo, base 100' in html
+    assert 'desk-compare-reset' in html
+    assert 'desk-compare-select' in js
+    assert 'Math.min(3' in js or 'slice(0, 3)' in js
+    assert 'p ? p.value : "—"' in js or 'p ? p.value : null' in js
+    assert 'compareRequest' in js and 'status' in js
+    assert '/api/indicators/${encodeURIComponent(coin)}' in js
+    assert "POST" not in js and "PUT" not in js and "DELETE" not in js

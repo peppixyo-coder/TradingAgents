@@ -610,7 +610,7 @@ function renderAdvancedDesk() {
     [r.coin, px(r.mark), pct(r.chg24h), usd(r.vol24h), usd(r.oi), pct(r.fundingAnn), "Hyperliquid"].forEach((v, i) => { const td = document.createElement("td"); td.textContent = v; if (i === 2 || i === 5) td.className = cls(i === 5 ? -r.fundingAnn : r.chg24h); tr.append(td); });
     tr.addEventListener("click", () => selectDeskAsset(r)); tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectDeskAsset(r); } }); body.append(tr);
   });
-  $("#desk-count").textContent = `${rows.length}/${S.market.length} assets`; $("#desk-empty").hidden = rows.length > 0;
+  $("#desk-count").textContent = `${rows.length}/${S.market.length} assets`; $("#desk-empty").hidden = rows.length > 0; renderCompareSelectors();
 }
 async function selectDeskAsset(r) {
   const coin = r.coin;
@@ -666,6 +666,48 @@ function renderDeskData(data) {
   }).join("");
   $("#desk-source").lastElementChild.textContent = `${data.source} · provider ${data.provider} · coverage ${data.coverage} · fetched ${data.fetched_at || "—"}`;
 }
+let compareRequest = 0;
+function compareUniverse() { return S.market.map(x => x.coin).filter(Boolean).slice(0, 3); }
+function renderCompareSelectors() {
+  const host = $("#desk-compare-select"); if (!host) return;
+  const selected = new Set($$("input[data-compare-coin]", host).filter(x => x.checked).map(x => x.value));
+  host.replaceChildren();
+  compareUniverse().forEach(coin => {
+    const label = document.createElement("label"); label.className = "desk-compare-option";
+    const input = document.createElement("input"); input.type = "checkbox"; input.value = coin; input.dataset.compareCoin = coin; input.checked = selected.has(coin);
+    input.addEventListener("change", () => { const checked = $$("input[data-compare-coin]", host).filter(x => x.checked); if (checked.length > 3) input.checked = false; else clearCompareOutput("Selezione aggiornata: aggiorna confronto."); });
+    label.append(input, document.createTextNode(` ${coin}`)); host.append(label);
+  });
+}
+function clearCompareOutput(message = "Seleziona almeno due asset.") {
+  compareRequest++;
+  if (S.charts.compare) { S.charts.compare.remove(); S.charts.compare = null; }
+  $("#desk-compare-chart").innerHTML = "<p class='empty'>Nessun confronto caricato.</p>";
+  $("#desk-compare-table thead").replaceChildren(); $("#desk-compare-table tbody").replaceChildren(); $("#desk-compare-state").textContent = message;
+}
+function normalizedCompare(candles) {
+  const valid = candles.map(c => ({ t: c.t, close: Number(c.close) })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.close));
+  const base = valid[0]?.close; if (!Number.isFinite(base) || base === 0) return [];
+  const byTime = new Map(valid.map(c => [c.t, +(c.close / base * 100).toFixed(4)]));
+  return [...byTime].map(([time, value]) => ({ time: Math.floor(time / 1000), value }));
+}
+async function runCompare() {
+  const coins = $$("input[data-compare-coin]").filter(x => x.checked).map(x => x.value).slice(0, 3);
+  const interval = $("#desk-timeframe")?.value || "1h", token = ++compareRequest;
+  if (coins.length < 2) { $("#desk-compare-state").textContent = "Seleziona almeno due asset."; return; }
+  $("#desk-compare-state").textContent = `loading · ${coins.join(", ")}`;
+  const results = await Promise.all(coins.map(async coin => { try { const response = await apiFetch(`/api/indicators/${encodeURIComponent(coin)}?interval=${interval}&hours=48`); if (!response.ok) throw new Error(`HTTP ${response.status}`); const data = await response.json(); const points = normalizedCompare(data.candles || []); return { coin, data, points, status: points.length ? (data.status || "unavailable") : "empty" }; } catch (error) { return { coin, data: {}, points: [], status: "error", error: error.message }; } }));
+  if (token !== compareRequest) return;
+  const good = results.filter(r => r.points.length); const allOk = results.every(r => r.status === "ok"); $("#desk-compare-state").textContent = allOk ? `ok · ${coins.join(", ")}` : `${good.length === results.length ? "stale" : "partial"} · ${results.map(r => `${r.coin}: ${r.status}`).join(" · ")}`;
+  if (S.charts.compare) { S.charts.compare.remove(); S.charts.compare = null; }
+  const chart = $("#desk-compare-chart"); chart.replaceChildren();
+  if (good.length && window.LightweightCharts) { const instance = LightweightCharts.createChart(chart, { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8B94A3" }, crosshair: { mode: LightweightCharts.CrosshairMode?.Normal ?? 0 }, handleScroll: true, handleScale: true }); S.charts.compare = instance; const colors = ["#4C8DFF", "#26A69A", "#E8B341"]; good.forEach((r, i) => { const series = instance.addLineSeries({ color: colors[i], lineWidth: 2, title: r.coin }); series.setData(r.points); }); instance.timeScale().fitContent(); }
+  else chart.innerHTML = "<p class='empty'>Nessun confronto disponibile.</p>";
+  const times = [...new Set(good.flatMap(r => r.points.map(p => p.time)))].sort((a, b) => a - b); $("#desk-compare-table thead").innerHTML = `<tr><th scope="col">Time</th>${coins.map(c => `<th scope="col">${c}</th>`).join("")}</tr>`; $("#desk-compare-table tbody").innerHTML = times.map(time => `<tr><td>${new Date(time * 1000).toISOString()}</td>${results.map(r => { const p = r.points.find(x => x.time === time); return `<td>${p ? p.value : "—"}</td>`; }).join("")}</tr>`).join("");
+}
+function resetCompareView() { S.charts.compare?.timeScale().fitContent(); $("#desk-compare-reset")?.focus(); }
+
+ /* ---------- system ---------- */
 
 /* ---------- system ---------- */
 function renderSystem() {
@@ -724,7 +766,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#desk-search").oninput = () => { saveDeskState(); renderAdvancedDesk(); };
   $("#desk-sort").onchange = () => { saveDeskState(); renderAdvancedDesk(); };
   $("#desk-reset").onclick = () => { $("#desk-search").value = ""; $("#desk-sort").value = "coin"; saveDeskState(); renderAdvancedDesk(); };
-  $("#desk-chart-reset").onclick = () => { S.charts.desk?.timeScale().fitContent(); $("#desk-chart-reset").focus(); }
+  $("#desk-chart-reset").onclick = () => { S.charts.desk?.timeScale().fitContent(); $("#desk-chart-reset").focus(); };
+  $("#desk-compare-run").onclick = runCompare;
+  $("#desk-compare-reset").onclick = resetCompareView;
+  $("#desk-timeframe").addEventListener("change", () => { compareRequest++; $("#desk-compare-state").textContent = "Selezione aggiornata: aggiorna confronto."; });
   $("#f-coin").oninput = renderTrades;
   $("#btn-csv").onclick = exportCsv;
   $("#tbl-trades").addEventListener("click", e => {

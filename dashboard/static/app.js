@@ -640,9 +640,18 @@ function renderDeskData(data) {
   $("#desk-state").textContent = candles.length
     ? `${data.source} · ${data.timeframe} · as of ${data.as_of || "—"} · freshness ${ago(data.fetched_at)}`
     : (data.errors || ["No candle data available."]).join("; ");
-  const chart = $("#desk-chart"); chart.replaceChildren();
+  const chart = $("#desk-chart");
+  if (S.charts.desk) { S.charts.desk.remove(); S.charts.desk = null; }
+  chart.replaceChildren();
   if (candles.length && window.LightweightCharts) {
-    const instance = LightweightCharts.createChart(chart, { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8B94A3" } });
+    const instance = LightweightCharts.createChart(chart, {
+      autoSize: true,
+      layout: { background: { color: "transparent" }, textColor: "#8B94A3" },
+      crosshair: { mode: LightweightCharts.CrosshairMode?.Normal ?? 0 },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
+    });
+    S.charts.desk = instance;
     const series = instance.addCandlestickSeries({ upColor: "#26A69A", downColor: "#EF5350", borderVisible: false, wickUpColor: "#26A69A", wickDownColor: "#EF5350" });
     series.setData(candles.map(c => ({ time: Math.floor(c.t / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
     const volume = candles.filter(c => c.volume != null);
@@ -715,6 +724,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#desk-search").oninput = () => { saveDeskState(); renderAdvancedDesk(); };
   $("#desk-sort").onchange = () => { saveDeskState(); renderAdvancedDesk(); };
   $("#desk-reset").onclick = () => { $("#desk-search").value = ""; $("#desk-sort").value = "coin"; saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-chart-reset").onclick = () => { S.charts.desk?.timeScale().fitContent(); $("#desk-chart-reset").focus(); }
   $("#f-coin").oninput = renderTrades;
   $("#btn-csv").onclick = exportCsv;
   $("#tbl-trades").addEventListener("click", e => {

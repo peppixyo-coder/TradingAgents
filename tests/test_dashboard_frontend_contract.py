@@ -58,3 +58,16 @@ def test_analytics_chart_is_robust_to_empty_null_and_malformed_series():
     # nessun endpoint di trading introdotto e API invariata
     assert "/api/indicators/" in js
     assert "POST" not in js and "PUT" not in js and "DELETE" not in js
+
+
+def test_advanced_desk_chart_exposes_native_interactions_and_reset_control():
+    html = (ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+    assert 'aria-label="Reimposta vista"' in html
+    assert "crosshair: { mode:" in js
+    assert "handleScroll" in js and "handleScale" in js
+    assert "timeScale().fitContent()" in js
+    assert "desk-chart-reset" in js
+    assert "S.charts.desk" in js
+    assert "/api/indicators/" in js
+    assert "POST" not in js and "PUT" not in js and "DELETE" not in js

@@ -58,6 +58,8 @@ class FakeC:
                           "leverage": {"value": "1"}}}
             for c, s in self.live.items()]}
 
+    def _post(self, path, payload):
+        return []
 
 class Cfg:
     wallet = "0xtest"
@@ -76,21 +78,39 @@ def _intent(side="long", qty=1.0, entry=100.0, stop=95.0, stop_oid=11,
 
 
 def _run(live_szi, n_filled=0, resting=None, **kw):
-    """n_filled: quanti TP sono gia' consumati (assenti dal book). Il test
-    li dimostra con la posizione ridotta. resting esplicito overridea (A-02)."""
+    """n_filled: quanti TP sono verificati come fill reali."""
     iid = _intent(**kw)
     ex = FakeEx()
     if resting is None:
         resting = {str(100 + n) for n in (1, 2, 3) if n > n_filled}
     import tradingagents.hyperliquid.loop as L
-    orig = L._resting_oids
+    orig_resting, orig_filled = L._resting_oids, L._filled_oids
     L._resting_oids = lambda c, cfg: resting
+    L._filled_oids = lambda c, cfg: {str(100 + n) for n in range(1, n_filled + 1)}
     try:
         fills, be = maintain_tps(FakeC({"BTC": live_szi}), Cfg, ex)
     finally:
-        L._resting_oids = orig
+        L._resting_oids, L._filled_oids = orig_resting, orig_filled
     it = dict(next(r for r in store.intents_open() if r["id"] == iid))
     return it, ex, fills, be
+
+def test_active_position_eps_defined_and_no_name_error():
+    old = _fresh_db()
+    try:
+        it, _, fills, _ = _run(1.0)
+        assert fills == 0 and not int(it["tp1_filled"])
+    finally:
+        store.DB = old
+
+
+def test_flat_position_without_real_tp_fill_stays_unmarked():
+    old = _fresh_db()
+    try:
+        it, _, fills, _ = _run(0.0, n_filled=0)
+        assert fills == 0
+        assert not any(int(it[f"tp{n}_filled"]) for n in (1, 2, 3))
+    finally:
+        store.DB = old
 
 # ---------- fill detection ----------
 

@@ -182,6 +182,33 @@ def test_screener_skip_coin_fuori_registry():
         store.DB = old_db
 
 
+def test_screener_excludes_configured_asset_blacklist(monkeypatch):
+    class Client(_ScreenerClient):
+        def asset_ctxs(self):
+            names = ["xyz:SKHX", "xyz:CL", "xyz:DRAM", "BTC"]
+            return ({"universe": [{"name": n, "isDelisted": False} for n in names]},
+                    [{"dayNtlVlm": "1e9", "openInterest": "1e9", "funding": "0",
+                      "prevDayPx": "10"}] * len(names))
+
+    old_universe = registry.universe
+    registry.universe = lambda c: (
+        {n: {"asset_class": "equity", "dex": "xyz"}
+         for n in ("xyz:SKHX", "xyz:CL", "xyz:DRAM", "BTC")}, 4, 0)
+    try:
+        logs = []
+        passed, _ = screener.screene(
+            Client(), {n: "10" for n in ("xyz:SKHX", "xyz:CL", "xyz:DRAM", "BTC")},
+            blacklist=("xyz:SKHX", "xyz:CL", "xyz:DRAM"), log_fn=logs.append)
+        assert [r["coin"] for r in passed] == ["BTC"]
+        assert logs == [
+            "[screener] xyz:SKHX BLACKLISTED: skip",
+            "[screener] xyz:CL BLACKLISTED: skip",
+            "[screener] xyz:DRAM BLACKLISTED: skip",
+        ]
+    finally:
+        registry.universe = old_universe
+
+
 def test_trailing_tollera_mid_mancante():
     """mids senza il coin dell'intento aperto (delisted): skip, il thread
     monitor non muore e gli altri intenti restano manutenuti."""

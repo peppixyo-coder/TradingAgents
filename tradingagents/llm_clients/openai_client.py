@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import re
 import threading
@@ -119,6 +120,125 @@ def sweep_armed_budgets():
     return out
 
 
+def _normalize_messages(messages):
+    """Flatten multimodal content blocks to strings for 9router."""
+    out = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                    for b in content)
+            elif content is None:
+                content = ""
+            out.append({**msg, "content": content})
+        else:
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                    for b in content)
+            elif content is None:
+                content = ""
+            msg.content = content
+            out.append(msg)
+    return out
+
+
+PROMPT_TOKEN_BUDGET = 10_000
+_CHARS_PER_TOKEN = 4
+class PromptBudgetExceeded(ValueError):
+    """Safe reduction failed; callers skip without provider access."""
+
+    def __init__(self, *, asset=None, node=None, section=None,
+                 estimated_tokens=None,
+                 reason="structured content cannot be reduced safely"):
+        self.asset = asset
+        self.node = node
+        self.section = section
+        self.estimated_tokens = estimated_tokens
+        self.reason = reason
+        super().__init__(
+            f"prompt_budget_exceeded asset={asset or '?'} node={node or '?'} "
+            f"section={section or '?'} tokens={estimated_tokens or '?'} "
+            f"reason={reason}")
+
+
+def _clip_content(text, limit):
+    if len(text) <= limit:
+        return text
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        marker = "\n...[prompt section clipped deterministically]...\n"
+        keep = max(0, limit - len(marker))
+        return text[:keep // 2] + marker + text[-(keep - keep // 2):]
+    if not isinstance(value, (dict, list)):
+        return json.dumps(str(value)[:max(0, limit // 2)], ensure_ascii=False)
+    compact = _compact_json(value, limit)
+    encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > limit:
+        raise PromptBudgetExceeded(estimated_tokens=len(encoded) // _CHARS_PER_TOKEN)
+    return encoded
+
+
+_JSON_CRITICAL = {"asset", "coin", "side", "action", "price", "entry", "timeframe",
+                  "indicators", "funding", "open_interest", "oi", "risk", "constraints"}
+
+
+def _compact_json(value, limit):
+    """Bounded JSON reduction: preserve critical keys, trim lists/strings once."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if str(key).lower() in _JSON_CRITICAL:
+                out[key] = item
+        for key, item in value.items():
+            if key not in out:
+                out[key] = item
+        encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) <= limit:
+            return out
+        for key in list(out):
+            if str(key).lower() in _JSON_CRITICAL:
+                continue
+            out.pop(key)
+            encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return out
+        return {key: out[key] for key in out if str(key).lower() in _JSON_CRITICAL}
+    if isinstance(value, list):
+        out = value[:max(1, min(len(value), limit // 64))]
+        while len(out) > 1 and len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+            out = out[:len(out) // 2]
+        return out
+    return value
+
+
+def _fit_prompt_budget(messages, budget=PROMPT_TOKEN_BUDGET):
+    normalized = _normalize_messages(messages)
+    limit = budget * _CHARS_PER_TOKEN
+    total = sum(len(str(m.get("content", ""))) for m in normalized)
+    if total <= limit:
+        return normalized
+    contents = [str(m.get("content", "")) for m in normalized]
+    excess = total - limit
+    for i in sorted(range(len(contents)), key=lambda n: len(contents[n]), reverse=True):
+        if excess <= 0:
+            break
+        target = max(1, len(contents[i]) - excess)
+        clipped = _clip_content(contents[i], target)
+        excess -= len(contents[i]) - len(clipped)
+        contents[i] = clipped
+    if excess > 0:
+        raise PromptBudgetExceeded(estimated_tokens=total // _CHARS_PER_TOKEN,
+                                   reason="total messages exceed safe budget")
+    return [{**m, "content": contents[i]} for i, m in enumerate(normalized)]
+
+
+
+
 class NormalizedChatOpenAI(ChatOpenAI):
     """ChatOpenAI with normalized content output and capability-aware binding.
 
@@ -128,14 +248,15 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     ``with_structured_output`` consults the llm config's capabilities table
     to pick the method and to decide whether ``tool_choice`` may be sent.
-    Models that reject ``tool_choice`` (e.g. DeepSeek V4 and reasoner - per
-    their official tool-calling guide) still bind the schema as a tool, but
+    Models that reject ``tool_choice`` still bind the schema as a tool, but
     no ``tool_choice`` parameter is sent.
 
-    Provider-specific quirks beyond structured-output (e.g. DeepSeek's
-    reasoning_content roundtrip) live in subclasses so this base class
-    stays small.
+    Provider-specific quirks beyond structured-output live in subclasses.
     """
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        payload["messages"] = _fit_prompt_budget(payload.get("messages", []))
+        return payload
 
     def _invoke_raw(self, input, config, **kwargs):
         # T43: 9router incapsula gli errori upstream (es. 502 Nvidia) in

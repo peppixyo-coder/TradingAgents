@@ -16,16 +16,20 @@ import signal
 import time
 from collections import deque
 
-import requests
 import websockets
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tradingagents.hyperliquid import store
 from tradingagents.hyperliquid.config import load
 from tradingagents.hyperliquid.data import DataError, HyPaperClient
 from tradingagents.hyperliquid.loop import equity, load_dotenv
+from tradingagents.market_intelligence.registry import (
+    advisory_snapshots,
+    health as market_intelligence_health,
+    load_snapshots,
+)
 
 load_dotenv()
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -625,6 +629,76 @@ async def api_key_guard(request: Request, call_next):
         return PlainTextResponse("unauthorized", status_code=401)
     return await call_next(request)
 
+def workspace_store():
+    from tradingagents.market_intelligence.workspace import WorkspaceStore, WorkspaceStoreError
+    root = os.environ.get("DASHBOARD_WORKSPACE_DIR", "").strip()
+    if not root:
+        raise WorkspaceStoreError("workspace_storage_unavailable", "workspace storage is not configured")
+    return WorkspaceStore(root)
+
+def _workspace_error(error):
+    codes = {"workspace_invalid": 422, "workspace_duplicate": 409, "workspace_not_found": 404,
+             "workspace_conflict": 409, "workspace_corrupt": 409, "workspace_storage_unavailable": 503,
+             "workspace_limit_exceeded": 413}
+    if not hasattr(error, "code"):
+        return JSONResponse(status_code=503, content={"error": {"code": "workspace_storage_unavailable", "message": "workspace storage unavailable", "fields": {}}})
+    return JSONResponse(status_code=codes.get(error.code, 422), content={"error": error.to_dict()})
+
+
+def _workspace_if_match(if_match: str | None):
+    if if_match is None:
+        return JSONResponse(status_code=428, content={"error": {"code": "workspace_conflict", "message": "If-Match revision required", "fields": {}}})
+    try:
+        return int(if_match.strip('"'))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": {"code": "workspace_invalid", "message": "invalid If-Match revision", "fields": {}}})
+
+
+@app.get("/api/workspaces")
+def api_workspaces_list():
+    try:
+        return workspace_store().list()
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.post("/api/workspaces")
+def api_workspaces_create(payload: dict = Body(...)):  # noqa: B008
+    try:
+        return workspace_store().create(payload)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.get("/api/workspaces/{workspace_id}")
+def api_workspace_get(workspace_id: str):
+    try:
+        return workspace_store().get(workspace_id)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.put("/api/workspaces/{workspace_id}")
+def api_workspace_update(workspace_id: str, payload: dict = Body(...), if_match: str | None = Header(default=None)):  # noqa: B008
+    revision = _workspace_if_match(if_match)
+    if isinstance(revision, JSONResponse):
+        return revision
+    try:
+        return workspace_store().update(workspace_id, revision, payload)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.delete("/api/workspaces/{workspace_id}")
+def api_workspace_delete(workspace_id: str, if_match: str | None = Header(default=None)):
+    revision = _workspace_if_match(if_match)
+    if isinstance(revision, JSONResponse):
+        return revision
+    try:
+        workspace_store().delete(workspace_id, revision)
+        return Response(status_code=204)
+    except Exception as error:
+        return _workspace_error(error)
 
 @app.get("/health")
 async def health():
@@ -730,6 +804,47 @@ def api_candles(coin: str, interval: str = "1h", hours: int = 48):
         raise HTTPException(502, str(e))
 
 
+@app.get("/api/ohlcv/{coin}")
+def api_ohlcv(coin: str, interval: str = "1h", hours: int = 48):
+    from tradingagents.market_intelligence.ohlcv import normalize_series
+
+    if not coin.strip() or len(coin) > 128 or hours < 1 or hours > 2_000:
+        raise HTTPException(400, "invalid OHLCV request")
+    try:
+        rows = agg.c.candles(coin, interval, hours * 3600 * 1000)
+        return normalize_series(coin, interval, rows, source="hyperliquid")
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, "Hyperliquid OHLCV unavailable") from e
+
+
+
+
+@app.get("/api/indicators/{coin}")
+def api_indicators(coin: str, interval: str = "1h", hours: int = 48,
+                   period: int = 14, fast: int = 12, slow: int = 26,
+                   signal: int = 9, smooth: int = 3, deviations: float = 2.0):
+    from tradingagents.market_intelligence.indicators import compute_all
+    from tradingagents.market_intelligence.ohlcv import SUPPORTED_TIMEFRAMES, normalize_series
+
+    if (not coin.strip() or len(coin) > 128 or interval not in SUPPORTED_TIMEFRAMES
+            or hours < 1 or hours > 2_000):
+        raise HTTPException(400, "invalid indicators request")
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2_000
+           for value in (period, fast, slow, signal, smooth)) or fast >= slow:
+        raise HTTPException(400, "invalid indicator period")
+    if not isinstance(deviations, (int, float)) or not 0 < deviations <= 10:
+        raise HTTPException(400, "invalid Bollinger deviations")
+    try:
+        rows = agg.c.candles(coin, interval, hours * 3600 * 1000)
+        series = normalize_series(coin, interval, rows, source="hyperliquid")
+        return compute_all(series, period=period, fast=fast, slow=slow,
+                           signal=signal, smooth=smooth, deviations=deviations)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, "Hyperliquid indicators unavailable") from e
 @app.get("/api/l2book/{coin}")
 def api_l2book(coin: str):
     try:
@@ -746,6 +861,50 @@ def api_funding(coin: str):
                          "endTime": int(time.time() * 1000)})
     except Exception as e:
         raise HTTPException(502, str(e))
+
+@app.get("/api/market-intelligence/health")
+def api_market_intelligence_health():
+    return market_intelligence_health()
+
+
+@app.get("/api/market-intelligence/sources")
+def api_market_intelligence_sources():
+    return {"sources": market_intelligence_health()["providers"]}
+
+
+@app.get("/api/market-intelligence/snapshot")
+def api_market_intelligence_snapshot(asset: str | None = None):
+    rows = load_snapshots()
+    if asset:
+        asset = asset.strip()
+        if not asset or len(asset) > 128 or any(ord(c) < 32 for c in asset):
+            raise HTTPException(400, "invalid asset")
+        rows = [row for row in rows
+                if row["asset"] == asset or row["canonical_asset"] == asset]
+    return {"snapshots": rows}
+
+
+@app.get("/api/market-intelligence/aggregate")
+def api_market_intelligence_aggregate(asset: str):
+    from tradingagents.market_intelligence.aggregation import aggregate_snapshot
+    from tradingagents.market_intelligence.context import format_external_market_context
+
+    asset = asset.strip()
+    if not asset or len(asset) > 128 or any(ord(c) < 32 for c in asset):
+        raise HTTPException(400, "invalid asset")
+    rows = advisory_snapshots(asset)
+    primary = next((r for r in rows if r["provider"] == "hyperliquid"), None)
+    result = aggregate_snapshot(asset, primary, rows)
+    result["context"] = format_external_market_context(rows)
+    result["sources"] = [{"provider": row["provider"], "status": row["status"],
+                          "provenance": row["provenance"], "quality": row["quality"]}
+                         for row in rows]
+    return result
+
+
+@app.get("/api/market-intelligence/export")
+def api_market_intelligence_export():
+    return {"snapshots": load_snapshots()}
 
 
 
@@ -835,6 +994,7 @@ async def startup():
     asyncio.create_task(fast_loop())
     asyncio.create_task(slow_loop())
     print("[startup] tasks created", flush=True)
+
 
 
 

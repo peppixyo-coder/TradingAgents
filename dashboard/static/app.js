@@ -4,7 +4,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
  agents: {}, cfg: {}, conn: {}, logs: [], scans: [], tab: "overview",
- apCoin: null, charts: {}, eqTf: "all", events: [],
+ apCoin: null, workspaceCompare: new Set(), charts: {}, eqTf: "all", events: [],
  tDetail: {}, tPending: new Set(), scanDetail: {}, scanPending: new Set() }; // T53: detail cache on-demand
 
 /* A-15: la middleware /api/* esige X-API-Key; la chiave arriva dal meta
@@ -77,6 +77,7 @@ function onMetrics(m) {
   if (S.tab === "analytics") renderAnalytics();
   if (S.tab === "agents") renderAgents();
   if (S.tab === "market") renderMarket();
+  if (S.tab === "advanced-desk") renderAdvancedDesk();
   if (S.tab === "system") renderSystem();
 }
 
@@ -424,6 +425,18 @@ let apexInstances = {};
 function chart(id, { series, type, colors, x, min, max }) {
   if (apexInstances[id]) apexInstances[id].destroy();
   const palette = ["#26A69A", "#EF5350", "#4C8DFF", "#E8B341"];
+  // robusto: normalizza ogni serie Apex.
+  // category (x fornita): valori numerici, null scartati -> stringa "—" via formatter.
+  // datetime (x assente): serie di coppie [t, v] -> {x, y}; scarta punti null/NaN.
+  const normal = series.map(s => {
+    const raw = Array.isArray(s.data) ? s.data : [];
+    const data = x
+      ? raw.filter(v => v != null && !Number.isNaN(v))
+      : raw.filter(p => Array.isArray(p) && p[0] != null && p[1] != null && !Number.isNaN(p[1]))
+          .map(p => ({ x: p[0], y: p[1] }));
+    return { ...s, data };
+  });
+  if (normal.every(s => !s.data.length)) return emptyChart(id);
   const options = {
     chart: { type: type === "area" ? "area" : type, height: 260, background: "transparent",
       fontFamily: "IBM Plex Mono, monospace", toolbar: { show: false }, animations: { enabled: false },
@@ -434,13 +447,14 @@ function chart(id, { series, type, colors, x, min, max }) {
     fill: type === "area" ? { type: "gradient", opacity: [.25, 0] } :
       type === "bar" ? { opacity: .8 } : {},
     dataLabels: { enabled: false },
-    xaxis: { type: x ? "category" : "datetime", categories: x,
+    xaxis: { type: x ? "category" : "datetime", categories: x || [],
       labels: { style: { fontSize: "10px" } }, axisBorder: { show: false } },
-    yaxis: { min, max, labels: { formatter: v => Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : (+v).toFixed(1) } },
+    yaxis: { min, max, labels: { formatter: v => v == null || Number.isNaN(v)
+      ? "—" : Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : (+v).toFixed(1) } },
     grid: { borderColor: "#1F2630" },
     tooltip: { theme: "dark" },
     legend: { show: false },
-    series,
+    series: normal,
   };
   apexInstances[id] = new ApexCharts($("#" + id), options);
   apexInstances[id].render();
@@ -579,6 +593,184 @@ async function openAsset(coin) {
   } catch (e) { $("#ap-mid").textContent = "feed errore: " + e.message; }
 }
 
+/* ---------- server-backed workspaces: explicit actions only ---------- */
+S.workspace = null;
+function workspaceStatus(message, error = false) {
+  const el = $("#workspace-status"); if (el) { el.textContent = message; el.classList.toggle("neg", error); }
+}
+function workspacePayload() {
+  return { schema_version: 1, name: $("#workspace-name").value.trim(), ui: {
+    asset: S.apCoin || $("#desk-search").value.trim().toUpperCase() || "BTC",
+    timeframe: $("#desk-timeframe").value, compare_assets: $$('input[data-compare-coin]:checked').map(x => x.value).slice(0, 3),
+    search: $("#desk-search").value, sort: $("#desk-sort").value, indicator_settings: {}
+  } };
+}
+function validWorkspace(record) {
+  return record && typeof record === "object" && typeof record.workspace_id === "string" && Number.isInteger(record.revision) && record.payload && typeof record.payload === "object" && record.payload.ui && typeof record.payload.ui === "object";
+}
+function workspaceError(status, body) {
+  const code = body?.error?.code || "workspace_invalid";
+  const label = status === 401 || status === 403 ? "Autorizzazione negata" : status === 404 ? "Workspace non trovato" : code === "workspace_conflict" ? "Conflitto: ricarica il workspace" : code === "workspace_storage_unavailable" ? "Workspace non disponibile" : `${code} · HTTP ${status}`;
+  workspaceStatus(label, true);
+}
+async function workspaceRequest(url, options = {}) {
+  const response = await apiFetch(url, options); let body = null;
+  try { body = await response.json(); } catch { /* invalid response handled below */ }
+  if (!response.ok) { workspaceError(response.status, body); throw new Error(body?.error?.code || `HTTP ${response.status}`); }
+  if (body == null) { workspaceStatus("Risposta workspace non valida", true); throw new Error("invalid workspace response"); }
+  return body;
+}
+function applyWorkspace(record) {
+  if (!validWorkspace(record)) throw new Error("invalid workspace response");
+  const ui = record.payload.ui;
+  S.workspace = record; S.apCoin = ui.asset; S.workspaceCompare = new Set(ui.compare_assets || []); $("#workspace-name").value = record.payload.name;
+  $("#desk-search").value = ui.search; $("#desk-sort").value = ui.sort; $("#desk-timeframe").value = ui.timeframe;
+  $("#workspace-revision").textContent = `${record.payload.name} · revisione ${record.revision}`;
+  const missing = [ui.asset, ...(ui.compare_assets || [])].filter(x => !(S.cfg.watchlist || []).includes(x));
+  workspaceStatus(missing.length ? `Incompatibile · mancanti: ${missing.join(", ")}` : "Caricato");
+  renderAdvancedDesk();
+}
+async function workspaceList() {
+  try {
+    const records = await workspaceRequest("/api/workspaces");
+    if (!Array.isArray(records) || records.some(record => !validWorkspace(record))) throw new Error("invalid workspace response");
+    const select = $("#workspace-list"); select.replaceChildren(new Option("Seleziona workspace", ""));
+    records.forEach(record => select.append(new Option(`${record.payload.name} · r${record.revision}`, record.workspace_id)));
+    workspaceStatus(records.length ? "Disponibile" : "Nessun workspace");
+  } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceLoad() {
+  const id = $("#workspace-list").value; if (!id) return workspaceStatus("Seleziona un workspace", true);
+  try { applyWorkspace(await workspaceRequest(`/api/workspaces/${encodeURIComponent(id)}`)); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceCreate() {
+  try { applyWorkspace(await workspaceRequest("/api/workspaces", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(workspacePayload()) })); await workspaceList(); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceSave() {
+  if (!S.workspace) return workspaceStatus("Carica un workspace prima di aggiornare", true);
+  try { applyWorkspace(await workspaceRequest(`/api/workspaces/${encodeURIComponent(S.workspace.workspace_id)}`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": `"${S.workspace.revision}"` }, body: JSON.stringify(workspacePayload()) })); await workspaceList(); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceDelete() {
+  if (!S.workspace || !window.confirm(`Eliminare ${S.workspace.payload.name}?`)) return;
+  try { await workspaceRequest(`/api/workspaces/${encodeURIComponent(S.workspace.workspace_id)}`, { method: "DELETE", headers: { "If-Match": `"${S.workspace.revision}"` } }); S.workspace = null; $("#workspace-revision").textContent = "Nessun workspace corrente."; workspaceStatus("Eliminato"); await workspaceList(); } catch { /* preserve local state on failure */ }
+}
+
+/* ---------- original Advanced Desk ---------- */
+const DESK_KEY = "hl-paper-desk:advanced-view";
+function saveDeskState() {
+  localStorage.setItem(DESK_KEY, JSON.stringify({ search: $("#desk-search")?.value || "", sort: $("#desk-sort")?.value || "coin" }));
+}
+function restoreDeskState() {
+  try { const s = JSON.parse(localStorage.getItem(DESK_KEY) || "{}"); if (s.search) $("#desk-search").value = s.search; if (s.sort) $("#desk-sort").value = s.sort; } catch {}
+}
+function renderAdvancedDesk() {
+  const search = $("#desk-search").value.trim().toUpperCase(), sort = $("#desk-sort").value;
+  const rows = S.market.filter(r => !search || r.coin.toUpperCase().includes(search)).slice().sort((a, b) => sort === "coin" ? a.coin.localeCompare(b.coin) : (Number(b[sort]) || 0) - (Number(a[sort]) || 0));
+  const body = $("#desk-table tbody"); body.replaceChildren();
+  rows.forEach(r => {
+    const tr = document.createElement("tr"); tr.tabIndex = 0; tr.dataset.coin = r.coin;
+    [r.coin, px(r.mark), pct(r.chg24h), usd(r.vol24h), usd(r.oi), pct(r.fundingAnn), "Hyperliquid"].forEach((v, i) => { const td = document.createElement("td"); td.textContent = v; if (i === 2 || i === 5) td.className = cls(i === 5 ? -r.fundingAnn : r.chg24h); tr.append(td); });
+    tr.addEventListener("click", () => selectDeskAsset(r)); tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectDeskAsset(r); } }); body.append(tr);
+  });
+  $("#desk-count").textContent = `${rows.length}/${S.market.length} assets`; $("#desk-empty").hidden = rows.length > 0; renderCompareSelectors();
+}
+async function selectDeskAsset(r) {
+  const coin = r.coin;
+  const interval = $("#desk-timeframe")?.value || "1h";
+  S.apCoin = coin;
+  $("#desk-title").textContent = `${coin} · ${interval}`;
+  $("#desk-status").textContent = "loading";
+  $("#desk-state").textContent = "Loading Hyperliquid data…";
+  $("#desk-chart").replaceChildren();
+  $("#desk-indicators").replaceChildren();
+  try {
+    const response = await apiFetch(`/api/indicators/${encodeURIComponent(coin)}?interval=${interval}&hours=48`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderDeskData(data);
+  } catch (error) {
+    $("#desk-status").textContent = "error";
+    $("#desk-state").textContent = `Unable to load ${coin}: ${error.message}`;
+    $("#desk-chart").innerHTML = "<p class='empty'>No chart data available.</p>";
+  }
+  $$("#desk-table tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.coin === coin));
+}
+
+function renderDeskData(data) {
+  const candles = Array.isArray(data.candles) ? data.candles : [];
+  $("#desk-status").textContent = data.status || "unavailable";
+  $("#desk-state").textContent = candles.length
+    ? `${data.source} · ${data.timeframe} · as of ${data.as_of || "—"} · freshness ${ago(data.fetched_at)}`
+    : (data.errors || ["No candle data available."]).join("; ");
+  const chart = $("#desk-chart");
+  if (S.charts.desk) { S.charts.desk.remove(); S.charts.desk = null; }
+  chart.replaceChildren();
+  if (candles.length && window.LightweightCharts) {
+    const instance = LightweightCharts.createChart(chart, {
+      autoSize: true,
+      layout: { background: { color: "transparent" }, textColor: "#8B94A3" },
+      crosshair: { mode: LightweightCharts.CrosshairMode?.Normal ?? 0 },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
+    });
+    S.charts.desk = instance;
+    const series = instance.addCandlestickSeries({ upColor: "#26A69A", downColor: "#EF5350", borderVisible: false, wickUpColor: "#26A69A", wickDownColor: "#EF5350" });
+    series.setData(candles.map(c => ({ time: Math.floor(c.t / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
+    const volume = candles.filter(c => c.volume != null);
+    if (volume.length) { const volumeSeries = instance.addHistogramSeries({ priceScaleId: "volume", priceFormat: { type: "volume" }, scaleMargins: { top: .8, bottom: 0 } }); volumeSeries.setData(volume.map(c => ({ time: Math.floor(c.t / 1000), value: c.volume, color: "#3C8D82" }))); }
+  } else chart.innerHTML = "<p class='empty'>No chart data available.</p>"
+  $("#desk-candle-table tbody").innerHTML = candles.slice(-24).map(c => `<tr><td>${new Date(c.t).toISOString()}</td><td>${px(c.open)}</td><td>${px(c.high)}</td><td>${px(c.low)}</td><td>${px(c.close)}</td><td>${c.volume == null ? "—" : num(c.volume, 2)}</td></tr>`).join("");
+  const labels = { rsi: "RSI", macd: "MACD", stochastic: "Stochastic", atr: "ATR", bollinger: "Bollinger Bands", volatility: "Volatility" };
+  $("#desk-indicators").innerHTML = Object.entries(data.indicators || {}).map(([name, item]) => {
+    const last = [...(item.values || [])].reverse().find(v => v.value != null);
+    const value = last ? JSON.stringify(last.value) : (item.errors || ["warm-up / unavailable"])[0];
+    return `<section class="desk-indicator"><h3>${labels[name] || name} · ${item.status}</h3><p>${value}</p></section>`;
+  }).join("");
+  $("#desk-source").lastElementChild.textContent = `${data.source} · provider ${data.provider} · coverage ${data.coverage} · fetched ${data.fetched_at || "—"}`;
+}
+let compareRequest = 0;
+function compareUniverse() { return S.market.map(x => x.coin).filter(Boolean).slice(0, 3); }
+function renderCompareSelectors() {
+  const host = $("#desk-compare-select"); if (!host) return;
+  const selected = S.workspaceCompare.size ? new Set(S.workspaceCompare) : new Set($$("input[data-compare-coin]", host).filter(x => x.checked).map(x => x.value));
+  host.replaceChildren();
+  compareUniverse().forEach(coin => {
+    const label = document.createElement("label"); label.className = "desk-compare-option";
+    const input = document.createElement("input"); input.type = "checkbox"; input.value = coin; input.dataset.compareCoin = coin; input.checked = selected.has(coin);
+    input.addEventListener("change", () => { const checked = $$("input[data-compare-coin]", host).filter(x => x.checked); if (checked.length > 3) input.checked = false; else { S.workspaceCompare = new Set(checked.map(x => x.value)); clearCompareOutput("Selezione aggiornata: aggiorna confronto."); } });
+    label.append(input, document.createTextNode(` ${coin}`)); host.append(label);
+  });
+}
+function clearCompareOutput(message = "Seleziona almeno due asset.") {
+  compareRequest++;
+  if (S.charts.compare) { S.charts.compare.remove(); S.charts.compare = null; }
+  $("#desk-compare-chart").innerHTML = "<p class='empty'>Nessun confronto caricato.</p>";
+  $("#desk-compare-table thead").replaceChildren(); $("#desk-compare-table tbody").replaceChildren(); $("#desk-compare-state").textContent = message;
+}
+function normalizedCompare(candles) {
+  const valid = candles.map(c => ({ t: c.t, close: Number(c.close) })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.close));
+  const base = valid[0]?.close; if (!Number.isFinite(base) || base === 0) return [];
+  const byTime = new Map(valid.map(c => [c.t, +(c.close / base * 100).toFixed(4)]));
+  return [...byTime].map(([time, value]) => ({ time: Math.floor(time / 1000), value }));
+}
+async function runCompare() {
+  const coins = $$("input[data-compare-coin]").filter(x => x.checked).map(x => x.value).slice(0, 3);
+  const interval = $("#desk-timeframe")?.value || "1h", token = ++compareRequest;
+  if (coins.length < 2) { $("#desk-compare-state").textContent = "Seleziona almeno due asset."; return; }
+  $("#desk-compare-state").textContent = `loading · ${coins.join(", ")}`;
+  const results = await Promise.all(coins.map(async coin => { try { const response = await apiFetch(`/api/indicators/${encodeURIComponent(coin)}?interval=${interval}&hours=48`); if (!response.ok) throw new Error(`HTTP ${response.status}`); const data = await response.json(); const points = normalizedCompare(data.candles || []); return { coin, data, points, status: points.length ? (data.status || "unavailable") : "empty" }; } catch (error) { return { coin, data: {}, points: [], status: "error", error: error.message }; } }));
+  if (token !== compareRequest) return;
+  const good = results.filter(r => r.points.length); const allOk = results.every(r => r.status === "ok"); $("#desk-compare-state").textContent = allOk ? `ok · ${coins.join(", ")}` : `${good.length === results.length ? "stale" : "partial"} · ${results.map(r => `${r.coin}: ${r.status}`).join(" · ")}`;
+  if (S.charts.compare) { S.charts.compare.remove(); S.charts.compare = null; }
+  const chart = $("#desk-compare-chart"); chart.replaceChildren();
+  if (good.length && window.LightweightCharts) { const instance = LightweightCharts.createChart(chart, { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8B94A3" }, crosshair: { mode: LightweightCharts.CrosshairMode?.Normal ?? 0 }, handleScroll: true, handleScale: true }); S.charts.compare = instance; const colors = ["#4C8DFF", "#26A69A", "#E8B341"]; good.forEach((r, i) => { const series = instance.addLineSeries({ color: colors[i], lineWidth: 2, title: r.coin }); series.setData(r.points); }); instance.timeScale().fitContent(); }
+  else chart.innerHTML = "<p class='empty'>Nessun confronto disponibile.</p>";
+  const times = [...new Set(good.flatMap(r => r.points.map(p => p.time)))].sort((a, b) => a - b); $("#desk-compare-table thead").innerHTML = `<tr><th scope="col">Time</th>${coins.map(c => `<th scope="col">${c}</th>`).join("")}</tr>`; $("#desk-compare-table tbody").innerHTML = times.map(time => `<tr><td>${new Date(time * 1000).toISOString()}</td>${results.map(r => { const p = r.points.find(x => x.time === time); return `<td>${p ? p.value : "—"}</td>`; }).join("")}</tr>`).join("");
+}
+function resetCompareView() { S.charts.compare?.timeScale().fitContent(); $("#desk-compare-reset")?.focus(); }
+
+ /* ---------- system ---------- */
+
 /* ---------- system ---------- */
 function renderSystem() {
   const k = S.k, c = S.cfg;
@@ -625,13 +817,21 @@ function exportCsv() {
 function switchTab(name) {
   S.tab = name;
   $$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
-  $$("main section").forEach(s => s.classList.toggle("on", s.id === "tab-" + name));
+  $$("main > section").forEach(s => s.classList.toggle("on", s.id === "tab-" + name));
   ({ overview: renderOverview, trades: renderTrades, analytics: renderAnalytics,
-     agents: renderAgents, market: renderMarket, system: renderSystem })[name]?.();
+     agents: renderAgents, market: renderMarket, "advanced-desk": renderAdvancedDesk, system: renderSystem })[name]?.();
 }
 document.addEventListener("DOMContentLoaded", () => {
-  $$("nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
-  $("#f-status").onchange = renderTrades; $("#f-outcome").onchange = renderTrades;
+  $("#desk-timeframe").onchange = () => { if (S.apCoin) { const row = S.market.find(item => item.coin === S.apCoin); if (row) selectDeskAsset(row); } };
+  restoreDeskState();
+  $$('nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+  $("#desk-search").oninput = () => { saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-sort").onchange = () => { saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-reset").onclick = () => { $("#desk-search").value = ""; $("#desk-sort").value = "coin"; saveDeskState(); renderAdvancedDesk(); };
+  $("#desk-chart-reset").onclick = () => { S.charts.desk?.timeScale().fitContent(); $("#desk-chart-reset").focus(); };
+  $("#desk-compare-run").onclick = runCompare;
+  $("#desk-compare-reset").onclick = resetCompareView;
+  $("#desk-timeframe").addEventListener("change", () => { compareRequest++; $("#desk-compare-state").textContent = "Selezione aggiornata: aggiorna confronto."; });
   $("#f-coin").oninput = renderTrades;
   $("#btn-csv").onclick = exportCsv;
   $("#tbl-trades").addEventListener("click", e => {
@@ -645,6 +845,12 @@ document.addEventListener("DOMContentLoaded", () => {
     $$("#eq-tf .tf").forEach(x => x.classList.toggle("on", x === b));
     drawEquity();
   });
+  $("#workspace-load").onclick = workspaceLoad;
+  $("#workspace-create").onclick = workspaceCreate;
+  $("#workspace-save").onclick = workspaceSave;
+  $("#workspace-delete").onclick = workspaceDelete;
+  $("#workspace-list").onchange = workspaceLoad;
+  workspaceList();
   // A-15: link Report e' navigazione pura (no header) -> key come query
   const rep = $('a[href="/api/report"]');
   if (rep && API_KEY) rep.href = `/api/report?key=${encodeURIComponent(API_KEY)}`;

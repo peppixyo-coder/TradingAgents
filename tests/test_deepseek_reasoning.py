@@ -11,6 +11,7 @@ Two pieces verified:
    https://api-docs.deepseek.com/guides/tool_calls.
 """
 
+import inspect
 import os
 
 import pytest
@@ -46,6 +47,81 @@ class TestInputToMessages:
         # langchain conversion happens upstream of _get_request_payload.
         assert _input_to_messages("hello") == []
 
+
+@pytest.mark.unit
+def test_normalize_messages_flattens_content_without_losing_fields():
+    from tradingagents.llm_clients.openai_client import _normalize_messages
+
+    dict_message = {
+        "role": "tool",
+        "content": [{"type": "text", "text": "a"}, {"type": "image", "id": 1}],
+        "tool_calls": [{"id": "call-1"}],
+    }
+    langchain_message = HumanMessage(content=[{"type": "text", "text": "b"}])
+    messages = _normalize_messages([
+        dict_message,
+        langchain_message,
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "already plain"},
+    ])
+
+    assert [m["content"] for m in messages[:1]] == ["a\n{'type': 'image', 'id': 1}"]
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_calls"] == [{"id": "call-1"}]
+    assert messages[1].content == "b"
+    assert messages[2]["content"] == ""
+    assert messages[3]["content"] == "already plain"
+    assert all(isinstance(m.content if not isinstance(m, dict) else m["content"], str)
+               for m in messages)
+
+
+
+@pytest.mark.unit
+def test_fit_prompt_budget_clips_large_sections_and_preserves_messages():
+    from tradingagents.llm_clients.openai_client import PROMPT_TOKEN_BUDGET, _fit_prompt_budget
+
+    messages = [
+        {"role": "system", "content": "critical asset JUP and side long"},
+        {"role": "user", "content": "news " * 12000, "tool_calls": [{"id": "x"}]},
+        {"role": "assistant", "content": "history " * 2000},
+    ]
+    fitted = _fit_prompt_budget(messages)
+    assert sum(len(m["content"]) for m in fitted) <= PROMPT_TOKEN_BUDGET * 4
+    assert fitted[0]["content"] == messages[0]["content"]
+    assert fitted[1]["role"] == "user" and fitted[1]["tool_calls"] == [{"id": "x"}]
+    assert "JUP" in fitted[0]["content"] and "long" in fitted[0]["content"]
+    assert all(isinstance(m["content"], str) for m in fitted)
+
+
+@pytest.mark.unit
+def test_fit_prompt_budget_leaves_small_payload_unchanged():
+    from tradingagents.llm_clients.openai_client import _fit_prompt_budget
+
+    messages = [{"role": "user", "content": "asset JUP side long"}]
+    assert _fit_prompt_budget(messages) == messages
+
+
+@pytest.mark.unit
+def test_fit_prompt_budget_keeps_oversized_json_valid_and_critical_fields():
+    import json
+
+    from tradingagents.llm_clients.openai_client import _fit_prompt_budget
+
+    payload = {
+        "asset": "JUP", "side": "long", "price": 1.23,
+        "indicators": {"rsi": 55, "macd": 0.4}, "funding": 0.1,
+        "open_interest": 1000000, "risk": {"stop": 1.1},
+        "constraints": ["paper", "reduce-only"],
+        "news": ["headline " * 100 for _ in range(200)],
+    }
+    fitted = _fit_prompt_budget([{"role": "user", "content": json.dumps(payload)}])
+    parsed = json.loads(fitted[0]["content"])
+    assert parsed["asset"] == "JUP" and parsed["side"] == "long"
+    assert parsed["price"] == 1.23 and parsed["funding"] == 0.1
+    assert parsed["open_interest"] == 1000000
+    assert parsed["risk"] == {"stop": 1.1}
+    assert parsed["constraints"] == ["paper", "reduce-only"]
+    assert len(fitted[0]["content"]) <= 40000
 
 # ---------------------------------------------------------------------------
 # Reasoning content propagation across turns
@@ -231,9 +307,12 @@ class TestDeepSeekLiveStructuredOutput:
 @pytest.mark.unit
 class TestBaseClassIsolation:
     def test_normalized_does_not_propagate_reasoning_content(self):
-        """The general-purpose NormalizedChatOpenAI must not carry
-        DeepSeek-specific behaviour. Only the subclass does."""
-        assert not hasattr(NormalizedChatOpenAI, "_get_request_payload") or (
-            NormalizedChatOpenAI._get_request_payload
-            is NormalizedChatOpenAI.__bases__[0]._get_request_payload
-        )
+        """Only NormalizedChatOpenAI's shared T68b budget hook lives on the
+        base class; DeepSeek reasoning_content round-trip must stay subclass-only."""
+        base_payload = NormalizedChatOpenAI._get_request_payload
+        deepseek_payload = DeepSeekChatOpenAI._get_request_payload
+        assert base_payload is not deepseek_payload
+        source = inspect.getsource(base_payload)
+        assert "_fit_prompt_budget" in source
+        assert "reasoning_content" not in source
+        assert "reasoning_content" in inspect.getsource(deepseek_payload)

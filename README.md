@@ -299,6 +299,16 @@ python -m pytest tests/test_dashboard_regression.py -q   # same checks as a regr
 
 The Docker image runs the same script as its container `healthcheck` (60s interval), so a regressed dashboard shows `unhealthy` in `docker ps` instead of failing silently.
 
+The pytest variant (`tests/test_dashboard_regression.py::test_dashboard_serves_complete_data`)
+is an **integration test that depends on the live stack**: it accepts a TCP/HTTP
+connection on `:8080` and that the dashboard responds with its own HTML (`HL Paper`)
+and exposes APIs the test can authenticate to (not `401/403` without the
+`DASHBOARD_API_KEY`). When that stack is absent or not authenticable, the test is
+**skipped** explicitly instead of failing, so the unit/CI gate stays green without a
+running Docker stack. The real end-to-end coverage is only exercised when the stack
+is up: run `docker compose up dashboard` and (if the dashboard requires a key)
+`DASHBOARD_API_KEY=...` before `python -m pytest tests/test_dashboard_regression.py -q`.
+
 ## Contributing
 
 Contributions are welcome: bug fixes, documentation, and feature ideas; past contributions are credited per release in [`CHANGELOG.md`](CHANGELOG.md).

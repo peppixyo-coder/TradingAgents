@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -7,6 +8,13 @@ from tradingagents.market_intelligence.workspace import (
     WorkspaceStore,
     WorkspaceStoreError,
 )
+
+
+def _hold_workspace_lock(path, ready_event, release_event):
+    owned = WorkspaceStore(path)
+    with owned._cross_process_lock():
+        ready_event.set()
+        release_event.wait(5)
 
 
 def payload(name="BTC intraday"):
@@ -119,3 +127,38 @@ def test_total_size_limit_and_no_operational_artifacts(tmp_path):
     files = list((tmp_path / "w").iterdir())
     assert files and all(f.suffix == ".json" for f in files)
     assert not (tmp_path / "state").exists() and not (tmp_path / "bot.db").exists()
+
+
+def test_cross_process_lock_timeout_and_release(tmp_path):
+    root = tmp_path / "w"
+    store = WorkspaceStore(root)
+    created = store.create(payload())
+    ready = multiprocessing.Event()
+    release = multiprocessing.Event()
+    process = multiprocessing.Process(target=_hold_workspace_lock, args=(root, ready, release))
+    process.start()
+    assert ready.wait(3)
+    with pytest.raises(WorkspaceStoreError) as exc:
+        store.update(created["workspace_id"], 1, payload("blocked"))
+    assert exc.value.code == "workspace_storage_unavailable"
+    release.set()
+    process.join(5)
+    assert process.exitcode == 0
+    updated = store.update(created["workspace_id"], 1, payload("released"))
+    assert updated["revision"] == 2
+    assert not list(root.glob("*.tmp"))
+
+
+def test_different_roots_do_not_share_lock(tmp_path):
+    first = WorkspaceStore(tmp_path / "one")
+    second = WorkspaceStore(tmp_path / "two")
+    with first._cross_process_lock(), second._cross_process_lock():
+        pass
+
+
+
+def test_lock_cleanup_after_exception(tmp_path):
+    store = WorkspaceStore(tmp_path / "w")
+    with pytest.raises(RuntimeError), store._cross_process_lock():
+        raise RuntimeError("boom")
+    assert not (tmp_path / "w" / ".workspace.lock").exists()

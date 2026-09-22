@@ -13,8 +13,10 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -224,6 +226,28 @@ class WorkspaceStore:
     def _lock(self) -> threading.RLock:
         return _LOCKS[self._lock_key]
 
+    @contextmanager
+    def _cross_process_lock(self, timeout: float = 2.0):
+        self.root.mkdir(parents=True, exist_ok=True)
+        marker = self.root / ".workspace.lock"
+        deadline = time.monotonic() + timeout
+        acquired = False
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    os.mkdir(marker)
+                    acquired = True
+                    break
+                except FileExistsError:
+                    time.sleep(0.02)
+            if not acquired:
+                raise WorkspaceStoreError("workspace_storage_unavailable", "workspace lock timeout")
+            yield
+        finally:
+            if acquired:
+                with contextlib.suppress(OSError):
+                    marker.rmdir()
+
     def _files(self) -> list[Path]:
         if not self.root.exists():
             return []
@@ -244,6 +268,12 @@ class WorkspaceStore:
 
     def _records(self) -> list[dict[str, Any]]:
         return [self._read(path) for path in self._files()]
+
+    def _get_unlocked(self, workspace_id: str) -> dict[str, Any]:
+        path = self.root / f"{workspace_id}.json"
+        if not path.is_file():
+            raise WorkspaceStoreError("workspace_not_found", "workspace not found")
+        return self._read(path)
 
     def _write(self, record: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -287,7 +317,7 @@ class WorkspaceStore:
             )
 
     def create(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._cross_process_lock():
             records = self._records()
             try:
                 clean = validate_workspace_payload(
@@ -298,12 +328,13 @@ class WorkspaceStore:
                 raise WorkspaceStoreError(code, exc.message, exc.fields) from exc
             if len(records) >= MAX_WORKSPACES:
                 raise WorkspaceStoreError("workspace_limit_exceeded", "workspace count exceeded")
+            timestamp = _now()
             record = {
                 "schema_version": SCHEMA_VERSION,
                 "workspace_id": str(uuid.uuid4()),
                 "revision": 1,
-                "created_at": _now(),
-                "updated_at": _now(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
                 "payload": clean,
             }
             self._check_total(record)
@@ -311,21 +342,18 @@ class WorkspaceStore:
             return record
 
     def get(self, workspace_id: str) -> dict[str, Any]:
-        with self._lock:
-            path = self.root / f"{workspace_id}.json"
-            if not path.is_file():
-                raise WorkspaceStoreError("workspace_not_found", "workspace not found")
-            return self._read(path)
+        with self._lock, self._cross_process_lock():
+            return self._get_unlocked(workspace_id)
 
     def list(self) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._lock, self._cross_process_lock():
             return self._records()
 
     def update(
         self, workspace_id: str, expected_revision: int, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
-        with self._lock:
-            current = self.get(workspace_id)
+        with self._lock, self._cross_process_lock():
+            current = self._get_unlocked(workspace_id)
             if current.get("revision") != expected_revision:
                 raise WorkspaceStoreError("workspace_conflict", "workspace revision conflict")
             names = [
@@ -349,8 +377,8 @@ class WorkspaceStore:
             return record
 
     def delete(self, workspace_id: str, expected_revision: int) -> None:
-        with self._lock:
-            current = self.get(workspace_id)
+        with self._lock, self._cross_process_lock():
+            current = self._get_unlocked(workspace_id)
             if current.get("revision") != expected_revision:
                 raise WorkspaceStoreError("workspace_conflict", "workspace revision conflict")
             try:

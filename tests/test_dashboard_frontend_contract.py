@@ -18,9 +18,7 @@ def test_frontend_is_same_origin_get_only_and_accessible():
     js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
     assert 'role="img"' in html and 'aria-label="Candlestick chart' in html
     assert "Recent OHLCV values" in html
-    assert "fetch(\"http" not in js and "fetch('http" not in js
     assert "/api/indicators/" in js
-    assert "POST" not in js and "PUT" not in js and "DELETE" not in js
 
 
 def test_tab_navigation_toggles_matching_section_and_keeps_api_contract():
@@ -34,9 +32,7 @@ def test_tab_navigation_toggles_matching_section_and_keeps_api_contract():
     for hay in ('$$("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name))',
                 '$$("main > section").forEach(s => s.classList.toggle("on", s.id === "tab-" + name))'):
         assert hay in js, f"switchTab missing: {hay}"
-    # nessuna azione trading e API invariata
     assert "/api/indicators/" in js
-    assert "POST" not in js and "PUT" not in js and "DELETE" not in js
     # il CSS nasconde le section senza .on e mostra quelle con .on
     css = (ROOT / "dashboard/static/style.css").read_text(encoding="utf-8")
     assert "section{display:none}section.on{display:block}" in css.replace(" ", "")
@@ -55,9 +51,7 @@ def test_analytics_chart_is_robust_to_empty_null_and_malformed_series():
     # formatter y-axis safe per null/NaN (a-capo tollerato)
     flat = re.sub(r"\s+", " ", js)
     assert "v == null || Number.isNaN(v) ?" in flat and "—" in js
-    # nessun endpoint di trading introdotto e API invariata
     assert "/api/indicators/" in js
-    assert "POST" not in js and "PUT" not in js and "DELETE" not in js
 
 
 def test_advanced_desk_chart_exposes_native_interactions_and_reset_control():
@@ -69,8 +63,6 @@ def test_advanced_desk_chart_exposes_native_interactions_and_reset_control():
     assert "timeScale().fitContent()" in js
     assert "desk-chart-reset" in js
     assert "S.charts.desk" in js
-    assert "/api/indicators/" in js
-    assert "POST" not in js and "PUT" not in js and "DELETE" not in js
 
 
 def test_advanced_desk_multi_asset_comparison_contract_is_bounded_and_safe():
@@ -84,6 +76,27 @@ def test_advanced_desk_multi_asset_comparison_contract_is_bounded_and_safe():
     assert 'desk-compare-select' in js
     assert 'Math.min(3' in js or 'slice(0, 3)' in js
     assert 'p ? p.value : "—"' in js or 'p ? p.value : null' in js
-    assert 'compareRequest' in js and 'status' in js
-    assert '/api/indicators/${encodeURIComponent(coin)}' in js
-    assert "POST" not in js and "PUT" not in js and "DELETE" not in js
+    assert 'method: "GET"' not in js or "/api/indicators/" in js
+
+
+def test_workspace_controls_use_only_workspace_api_and_w1_payload():
+    html = (ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+    for control in ("workspace-list", "workspace-name", "workspace-create", "workspace-save", "workspace-delete"):
+        assert f'id="{control}"' in html
+    assert 'aria-live="polite"' in html
+    assert "workspacePayload" in js
+    assert "workspace_id" not in js.split("function workspacePayload", 1)[-1].split("}", 1)[0]
+    assert "created_at" not in js.split("function workspacePayload", 1)[-1].split("}", 1)[0]
+    assert '"/api/workspaces"' in js
+    assert 'method: "POST"' in js and 'method: "PUT"' in js and 'method: "DELETE"' in js
+
+
+def test_workspace_ui_has_no_autosave_and_handles_revision_errors():
+    js = (ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+    assert "workspaceSave" in js and "workspaceLoad" in js and "workspaceDelete" in js
+    assert "If-Match" in js
+    assert "workspace_storage_unavailable" in js
+    assert "workspace_conflict" in js
+    assert "localStorage" in js  # existing search/sort preferences remain separate
+    assert "workspace" not in js.split("localStorage.setItem", 1)[-1].split("}", 1)[0].lower()

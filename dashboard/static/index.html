@@ -157,6 +157,20 @@
 </section>
 
 <section id="tab-advanced-desk">
+  <div class="card workspace-panel" aria-labelledby="workspace-heading">
+    <div class="card-h"><h2 id="workspace-heading">Workspace</h2><span id="workspace-status" role="status" aria-live="polite">Non caricato</span></div>
+    <div class="workspace-controls">
+      <label for="workspace-list">Workspace disponibile</label>
+      <select id="workspace-list" aria-describedby="workspace-status"><option value="">Seleziona workspace</option></select>
+      <button class="ghost" id="workspace-load" type="button">Carica</button>
+      <label for="workspace-name">Nome workspace</label>
+      <input id="workspace-name" type="text" maxlength="48" autocomplete="off">
+      <button class="ghost" id="workspace-create" type="button">Salva nuovo</button>
+      <button class="ghost" id="workspace-save" type="button">Aggiorna</button>
+      <button class="ghost" id="workspace-delete" type="button">Elimina</button>
+    </div>
+    <p id="workspace-revision" class="hint" role="status" aria-live="polite">Nessun workspace corrente.</p>
+  </div>
   <div class="desk-toolbar" role="toolbar" aria-label="Advanced Desk controls">
     <label for="desk-search">Search universe</label>
     <input id="desk-search" type="search" placeholder="BTC, ETHFI…" autocomplete="off">

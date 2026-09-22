@@ -4,7 +4,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const S = { mids: {}, positions: [], k: {}, equity: [], trades: [], market: [],
  agents: {}, cfg: {}, conn: {}, logs: [], scans: [], tab: "overview",
- apCoin: null, charts: {}, eqTf: "all", events: [],
+ apCoin: null, workspaceCompare: new Set(), charts: {}, eqTf: "all", events: [],
  tDetail: {}, tPending: new Set(), scanDetail: {}, scanPending: new Set() }; // T53: detail cache on-demand
 
 /* A-15: la middleware /api/* esige X-API-Key; la chiave arriva dal meta
@@ -593,6 +593,68 @@ async function openAsset(coin) {
   } catch (e) { $("#ap-mid").textContent = "feed errore: " + e.message; }
 }
 
+/* ---------- server-backed workspaces: explicit actions only ---------- */
+S.workspace = null;
+function workspaceStatus(message, error = false) {
+  const el = $("#workspace-status"); if (el) { el.textContent = message; el.classList.toggle("neg", error); }
+}
+function workspacePayload() {
+  return { schema_version: 1, name: $("#workspace-name").value.trim(), ui: {
+    asset: S.apCoin || $("#desk-search").value.trim().toUpperCase() || "BTC",
+    timeframe: $("#desk-timeframe").value, compare_assets: $$('input[data-compare-coin]:checked').map(x => x.value).slice(0, 3),
+    search: $("#desk-search").value, sort: $("#desk-sort").value, indicator_settings: {}
+  } };
+}
+function validWorkspace(record) {
+  return record && typeof record === "object" && typeof record.workspace_id === "string" && Number.isInteger(record.revision) && record.payload && typeof record.payload === "object" && record.payload.ui && typeof record.payload.ui === "object";
+}
+function workspaceError(status, body) {
+  const code = body?.error?.code || "workspace_invalid";
+  const label = status === 401 || status === 403 ? "Autorizzazione negata" : status === 404 ? "Workspace non trovato" : code === "workspace_conflict" ? "Conflitto: ricarica il workspace" : code === "workspace_storage_unavailable" ? "Workspace non disponibile" : `${code} · HTTP ${status}`;
+  workspaceStatus(label, true);
+}
+async function workspaceRequest(url, options = {}) {
+  const response = await apiFetch(url, options); let body = null;
+  try { body = await response.json(); } catch { /* invalid response handled below */ }
+  if (!response.ok) { workspaceError(response.status, body); throw new Error(body?.error?.code || `HTTP ${response.status}`); }
+  if (body == null) { workspaceStatus("Risposta workspace non valida", true); throw new Error("invalid workspace response"); }
+  return body;
+}
+function applyWorkspace(record) {
+  if (!validWorkspace(record)) throw new Error("invalid workspace response");
+  const ui = record.payload.ui;
+  S.workspace = record; S.apCoin = ui.asset; S.workspaceCompare = new Set(ui.compare_assets || []); $("#workspace-name").value = record.payload.name;
+  $("#desk-search").value = ui.search; $("#desk-sort").value = ui.sort; $("#desk-timeframe").value = ui.timeframe;
+  $("#workspace-revision").textContent = `${record.payload.name} · revisione ${record.revision}`;
+  const missing = [ui.asset, ...(ui.compare_assets || [])].filter(x => !(S.cfg.watchlist || []).includes(x));
+  workspaceStatus(missing.length ? `Incompatibile · mancanti: ${missing.join(", ")}` : "Caricato");
+  renderAdvancedDesk();
+}
+async function workspaceList() {
+  try {
+    const records = await workspaceRequest("/api/workspaces");
+    if (!Array.isArray(records) || records.some(record => !validWorkspace(record))) throw new Error("invalid workspace response");
+    const select = $("#workspace-list"); select.replaceChildren(new Option("Seleziona workspace", ""));
+    records.forEach(record => select.append(new Option(`${record.payload.name} · r${record.revision}`, record.workspace_id)));
+    workspaceStatus(records.length ? "Disponibile" : "Nessun workspace");
+  } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceLoad() {
+  const id = $("#workspace-list").value; if (!id) return workspaceStatus("Seleziona un workspace", true);
+  try { applyWorkspace(await workspaceRequest(`/api/workspaces/${encodeURIComponent(id)}`)); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceCreate() {
+  try { applyWorkspace(await workspaceRequest("/api/workspaces", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(workspacePayload()) })); await workspaceList(); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceSave() {
+  if (!S.workspace) return workspaceStatus("Carica un workspace prima di aggiornare", true);
+  try { applyWorkspace(await workspaceRequest(`/api/workspaces/${encodeURIComponent(S.workspace.workspace_id)}`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": `"${S.workspace.revision}"` }, body: JSON.stringify(workspacePayload()) })); await workspaceList(); } catch (error) { if (error.message === "invalid workspace response") workspaceStatus("Risposta workspace non valida", true); }
+}
+async function workspaceDelete() {
+  if (!S.workspace || !window.confirm(`Eliminare ${S.workspace.payload.name}?`)) return;
+  try { await workspaceRequest(`/api/workspaces/${encodeURIComponent(S.workspace.workspace_id)}`, { method: "DELETE", headers: { "If-Match": `"${S.workspace.revision}"` } }); S.workspace = null; $("#workspace-revision").textContent = "Nessun workspace corrente."; workspaceStatus("Eliminato"); await workspaceList(); } catch { /* preserve local state on failure */ }
+}
+
 /* ---------- original Advanced Desk ---------- */
 const DESK_KEY = "hl-paper-desk:advanced-view";
 function saveDeskState() {
@@ -670,12 +732,12 @@ let compareRequest = 0;
 function compareUniverse() { return S.market.map(x => x.coin).filter(Boolean).slice(0, 3); }
 function renderCompareSelectors() {
   const host = $("#desk-compare-select"); if (!host) return;
-  const selected = new Set($$("input[data-compare-coin]", host).filter(x => x.checked).map(x => x.value));
+  const selected = S.workspaceCompare.size ? new Set(S.workspaceCompare) : new Set($$("input[data-compare-coin]", host).filter(x => x.checked).map(x => x.value));
   host.replaceChildren();
   compareUniverse().forEach(coin => {
     const label = document.createElement("label"); label.className = "desk-compare-option";
     const input = document.createElement("input"); input.type = "checkbox"; input.value = coin; input.dataset.compareCoin = coin; input.checked = selected.has(coin);
-    input.addEventListener("change", () => { const checked = $$("input[data-compare-coin]", host).filter(x => x.checked); if (checked.length > 3) input.checked = false; else clearCompareOutput("Selezione aggiornata: aggiorna confronto."); });
+    input.addEventListener("change", () => { const checked = $$("input[data-compare-coin]", host).filter(x => x.checked); if (checked.length > 3) input.checked = false; else { S.workspaceCompare = new Set(checked.map(x => x.value)); clearCompareOutput("Selezione aggiornata: aggiorna confronto."); } });
     label.append(input, document.createTextNode(` ${coin}`)); host.append(label);
   });
 }
@@ -783,6 +845,12 @@ document.addEventListener("DOMContentLoaded", () => {
     $$("#eq-tf .tf").forEach(x => x.classList.toggle("on", x === b));
     drawEquity();
   });
+  $("#workspace-load").onclick = workspaceLoad;
+  $("#workspace-create").onclick = workspaceCreate;
+  $("#workspace-save").onclick = workspaceSave;
+  $("#workspace-delete").onclick = workspaceDelete;
+  $("#workspace-list").onchange = workspaceLoad;
+  workspaceList();
   // A-15: link Report e' navigazione pura (no header) -> key come query
   const rep = $('a[href="/api/report"]');
   if (rep && API_KEY) rep.href = `/api/report?key=${encodeURIComponent(API_KEY)}`;

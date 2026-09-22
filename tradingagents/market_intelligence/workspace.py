@@ -324,7 +324,7 @@ class WorkspaceStore:
                     payload, existing_names=[r.get("payload", {}).get("name") for r in records]
                 )
             except WorkspaceValidationError as exc:
-                code = "workspace_duplicate" if exc.code == "duplicate" else "workspace_invalid"
+                code = "workspace_duplicate" if exc.code == "duplicate" else "workspace_limit_exceeded" if exc.code == "limit_exceeded" and "payload exceeds" in exc.message else "workspace_invalid"
                 raise WorkspaceStoreError(code, exc.message, exc.fields) from exc
             if len(records) >= MAX_WORKSPACES:
                 raise WorkspaceStoreError("workspace_limit_exceeded", "workspace count exceeded")
@@ -364,7 +364,7 @@ class WorkspaceStore:
             try:
                 clean = validate_workspace_payload(payload, existing_names=names)
             except WorkspaceValidationError as exc:
-                code = "workspace_duplicate" if exc.code == "duplicate" else "workspace_invalid"
+                code = "workspace_duplicate" if exc.code == "duplicate" else "workspace_limit_exceeded" if exc.code == "limit_exceeded" and "payload exceeds" in exc.message else "workspace_invalid"
                 raise WorkspaceStoreError(code, exc.message, exc.fields) from exc
             record = {
                 **current,

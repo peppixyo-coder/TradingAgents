@@ -16,10 +16,9 @@ import signal
 import time
 from collections import deque
 
-import requests
 import websockets
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tradingagents.hyperliquid import store
@@ -630,6 +629,76 @@ async def api_key_guard(request: Request, call_next):
         return PlainTextResponse("unauthorized", status_code=401)
     return await call_next(request)
 
+def workspace_store():
+    from tradingagents.market_intelligence.workspace import WorkspaceStore, WorkspaceStoreError
+    root = os.environ.get("DASHBOARD_WORKSPACE_DIR", "").strip()
+    if not root:
+        raise WorkspaceStoreError("workspace_storage_unavailable", "workspace storage is not configured")
+    return WorkspaceStore(root)
+
+def _workspace_error(error):
+    codes = {"workspace_invalid": 422, "workspace_duplicate": 409, "workspace_not_found": 404,
+             "workspace_conflict": 409, "workspace_corrupt": 409, "workspace_storage_unavailable": 503,
+             "workspace_limit_exceeded": 413}
+    if not hasattr(error, "code"):
+        return JSONResponse(status_code=503, content={"error": {"code": "workspace_storage_unavailable", "message": "workspace storage unavailable", "fields": {}}})
+    return JSONResponse(status_code=codes.get(error.code, 422), content={"error": error.to_dict()})
+
+
+def _workspace_if_match(if_match: str | None):
+    if if_match is None:
+        return JSONResponse(status_code=428, content={"error": {"code": "workspace_conflict", "message": "If-Match revision required", "fields": {}}})
+    try:
+        return int(if_match.strip('"'))
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": {"code": "workspace_invalid", "message": "invalid If-Match revision", "fields": {}}})
+
+
+@app.get("/api/workspaces")
+def api_workspaces_list():
+    try:
+        return workspace_store().list()
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.post("/api/workspaces")
+def api_workspaces_create(payload: dict = Body(...)):  # noqa: B008
+    try:
+        return workspace_store().create(payload)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.get("/api/workspaces/{workspace_id}")
+def api_workspace_get(workspace_id: str):
+    try:
+        return workspace_store().get(workspace_id)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.put("/api/workspaces/{workspace_id}")
+def api_workspace_update(workspace_id: str, payload: dict = Body(...), if_match: str | None = Header(default=None)):  # noqa: B008
+    revision = _workspace_if_match(if_match)
+    if isinstance(revision, JSONResponse):
+        return revision
+    try:
+        return workspace_store().update(workspace_id, revision, payload)
+    except Exception as error:
+        return _workspace_error(error)
+
+
+@app.delete("/api/workspaces/{workspace_id}")
+def api_workspace_delete(workspace_id: str, if_match: str | None = Header(default=None)):
+    revision = _workspace_if_match(if_match)
+    if isinstance(revision, JSONResponse):
+        return revision
+    try:
+        workspace_store().delete(workspace_id, revision)
+        return Response(status_code=204)
+    except Exception as error:
+        return _workspace_error(error)
 
 @app.get("/health")
 async def health():
@@ -925,6 +994,7 @@ async def startup():
     asyncio.create_task(fast_loop())
     asyncio.create_task(slow_loop())
     print("[startup] tasks created", flush=True)
+
 
 
 

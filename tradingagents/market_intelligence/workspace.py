@@ -210,6 +210,14 @@ def _root(root: str | os.PathLike[str]) -> Path:
     ):
         raise WorkspaceStoreError("workspace_storage_unavailable", "storage root is operational")
     return resolved
+def _workspace_path(root: Path, workspace_id: str) -> Path:
+    try:
+        parsed = uuid.UUID(workspace_id)
+    except (AttributeError, ValueError, TypeError) as exc:
+        raise WorkspaceStoreError("workspace_not_found", "workspace not found") from exc
+    if str(parsed) != workspace_id:
+        raise WorkspaceStoreError("workspace_not_found", "workspace not found")
+    return root / f"{workspace_id}.json"
 
 
 class WorkspaceStore:
@@ -270,14 +278,14 @@ class WorkspaceStore:
         return [self._read(path) for path in self._files()]
 
     def _get_unlocked(self, workspace_id: str) -> dict[str, Any]:
-        path = self.root / f"{workspace_id}.json"
+        path = _workspace_path(self.root, workspace_id)
         if not path.is_file():
             raise WorkspaceStoreError("workspace_not_found", "workspace not found")
         return self._read(path)
 
     def _write(self, record: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        target = self.root / f"{record['workspace_id']}.json"
+        target = _workspace_path(self.root, record["workspace_id"])
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{record['workspace_id']}.", suffix=".tmp", dir=self.root
         )
@@ -382,7 +390,7 @@ class WorkspaceStore:
             if current.get("revision") != expected_revision:
                 raise WorkspaceStoreError("workspace_conflict", "workspace revision conflict")
             try:
-                (self.root / f"{workspace_id}.json").unlink()
+                _workspace_path(self.root, workspace_id).unlink()
             except OSError as exc:
                 raise WorkspaceStoreError(
                     "workspace_storage_unavailable", "workspace delete failed"

@@ -46,6 +46,24 @@ def test_round_trip_and_server_metadata(tmp_path):
         store.get(created["workspace_id"])
 
 
+
+def test_workspace_id_cannot_escape_storage_root(tmp_path):
+    root = tmp_path / "w"
+    store = WorkspaceStore(root)
+    created = store.create(payload())
+    outside = tmp_path / "escaped.json"
+    outside.write_text('{"payload": {}}', encoding="utf-8")
+    for operation in (
+        lambda: store.get("..\\escaped"),
+        lambda: store.update("..\\escaped", 1, payload("escape")),
+        lambda: store.delete("..\\escaped", 1),
+    ):
+        with pytest.raises(WorkspaceStoreError) as exc:
+            operation()
+        assert exc.value.code == "workspace_not_found"
+    assert outside.read_text(encoding="utf-8") == '{"payload": {}}'
+    assert store.get(created["workspace_id"])["workspace_id"] == created["workspace_id"]
+
 def test_duplicate_and_stale_revision_are_deterministic(tmp_path):
     one = WorkspaceStore(tmp_path / "w")
     two = WorkspaceStore(tmp_path / "w")

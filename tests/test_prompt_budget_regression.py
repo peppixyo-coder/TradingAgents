@@ -28,6 +28,13 @@ def test_market_analyst_20536_equivalent_structured_payload_fits_budget():
     assert parsed["side"] == "long"
 
 
+def test_heterogeneous_list_is_reduced_instead_of_rejected():
+    value = {"indicators": [1, "x" * 100_000], "asset": "ADA"}
+    fitted = _fit_prompt_budget([{"role": "user", "content": json.dumps(value)}])
+    parsed = json.loads(fitted[0]["content"])
+    assert parsed["asset"] == "ADA"
+    assert len(json.dumps(parsed, separators=(",", ":"))) <= PROMPT_TOKEN_BUDGET * 4
+
 def test_irreducible_payload_is_blocked_before_network():
     with pytest.raises(PromptBudgetExceeded):
         _fit_prompt_budget([{"role": "user", "content": json.dumps({"asset": "x" * 100_000})}])

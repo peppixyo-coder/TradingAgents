@@ -191,10 +191,16 @@ def _shrink_json_value(value, limit):
     if isinstance(value, str):
         return value[:max(0, limit)]
     if isinstance(value, list):
-        if not value:
-            return value
-        keep = max(1, min(len(value), limit // max(1, len(json.dumps(value[0], ensure_ascii=False, separators=(",", ":"))))))
-        return value[:keep]
+        out = list(value)
+        while len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+            if len(out) > 1:
+                out = out[:max(1, len(out) // 2)]
+                continue
+            reduced = _shrink_json_value(out[0], max(1, limit - 2))
+            if reduced == out[0]:
+                break
+            out[0] = reduced
+        return out
     if isinstance(value, dict):
         return _compact_json(value, limit)
     return value

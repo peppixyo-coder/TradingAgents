@@ -9,11 +9,19 @@ services:
       MIN_TRADE_CONFIDENCE: ${MIN_TRADE_CONFIDENCE:-0.75}
       CONTRARIAN_CONFIDENCE: ${CONTRARIAN_CONFIDENCE:-0.85}
       RANGING_CONFIDENCE_BOOST: ${RANGING_CONFIDENCE_BOOST:-0.05}
+      # Fix connettivita': il bot raggiunge HyPaper via service name interno
+      # `app` sulla rete Docker condivisa hypaper_default (vedi networks:).
+      # Quando HyPaper gira realmente sull'host (non in Docker), override con
+      # HYPAPER_URL=http://host.docker.internal:3000 (solo per ambienti esterni).
+      HYPAPER_URL: ${HYPAPER_URL:-http://app:3000}
     volumes:
       - ./state:/app/state
       - tradingagents_data:/home/appuser/.tradingagents
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - hypaper
     tty: true
     stdin_open: true
 
@@ -43,3 +51,13 @@ services:
 volumes:
   tradingagents_data:
   ollama_data:
+
+networks:
+  # Rete esterna del compose HyPaper (`docker compose -f ../HyPaper/docker-compose.yml
+  # up` crea hypaper_default). Unendo il bot a questa rete, il service name `app`
+  # risolve al mirror HyPaper: niente host.docker.internal, niente dipendenza
+  # dal routing Docker Desktop/WSL2. Se il network non esiste, `docker compose up`
+  # fallisce con errore esplicito (fail-fast, nessun fallback silenzioso).
+  hypaper:
+    external: true
+    name: hypaper_default

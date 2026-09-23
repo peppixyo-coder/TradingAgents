@@ -399,8 +399,11 @@ def maintain_tps(c, cfg, ex):
 
 
 def reconcile(c, cfg, ex):
-    """Riallinea intenti <-> realta': posizioni scomparse si archiviano,
-    stop mancanti si ri-attachano. Idempotente, gira a ogni iterazione."""
+    """Riallinea intenti <-> realta' senza mutare se il book non e' leggibile."""
+    resting = _resting_oids(c, cfg)
+    if resting is None:
+        log("[reconcile] frontendOpenOrders non disponibile: skip fail-closed")
+        return
     positions, entries = {}, {}
     for p in c.clearinghouse_state(cfg.wallet)["assetPositions"]:
         pos = p["position"]

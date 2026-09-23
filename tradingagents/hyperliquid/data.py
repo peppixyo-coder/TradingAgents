@@ -2,7 +2,6 @@
 
 HyPaper :3000 specchia /info e /exchange senza firme; i trade pubblici non sono
 sul suo WS -> la finestra OFI si raccoglie direttamente dal WS di Hyperliquid.
-Contratto T09: retry con backoff esponenziale (max 5) su 429/timeout.
 """
 import asyncio
 import json
@@ -14,6 +13,7 @@ import requests
 
 from . import store
 
+
 FNG_URL = "https://api.alternative.me/fng/?limit=1"
 RSS_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -21,6 +21,20 @@ WS_URL = "wss://api.hyperliquid.xyz/ws"
 
 class DataError(RuntimeError):
     pass
+
+
+class ConnectivityError(DataError):
+    """Bounded endpoint failure; callers must fail closed."""
+
+    def __init__(self, base: str, path: str, attempts: int, cause: Exception):
+        self.base = base
+        self.path = path
+        self.attempts = attempts
+        self.cause = cause
+        super().__init__(
+            f"{base}{path} unavailable after {attempts} bounded attempts: "
+            f"{type(cause).__name__}"
+        )
 
 
 class HyPaperClient:
@@ -40,7 +54,7 @@ class HyPaperClient:
         # l2Book): va su mainnet HL. Stato account/ordini ed /exchange restano
         # sul mirror HyPaper: e' l'unica fonte della verita' del paper wallet.
         base = self.pub_base if path == "/info" and "user" not in payload else self.base
-        for attempt in range(5):
+        for attempt in range(1, 6):
             try:
                 r = self.s.post(base + path, json=payload, timeout=timeout)
                 if r.status_code == 429:
@@ -48,15 +62,15 @@ class HyPaperClient:
                 r.raise_for_status()
                 body = r.json()
                 if isinstance(body, dict) and body.get("status") == "err":
-                    raise DataError(f"{path}: {body}")
+                    raise DataError(f"{path}: provider returned error status")
                 return body
-            except Exception as e:  # noqa: BLE001 - backoff su qualunque fallimento di rete
-                last = e
-                body = getattr(getattr(e, "response", None), "text", "")
-                # ponytail: il 429 di HL e' una finestra per-minuto -> attende
-                # oltre la finestra invece del backoff breve da thundering-herd.
-                time.sleep(21 if "429" in str(last) else 0.5 * 2 ** attempt)
-        raise DataError(f"{base}{path} fallito dopo 5 tentativi: {last} {body[:200]}")
+            except DataError:
+                raise
+            except requests.RequestException as exc:
+                last = exc
+                if attempt < 5:
+                    time.sleep(0.5 * 2 ** (attempt - 1))
+        raise ConnectivityError(base, path, 5, last)
 
     def meta(self, ttl=3600):
         if self._meta is None or time.time() - self._meta_ts > ttl:

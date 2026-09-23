@@ -187,8 +187,21 @@ _JSON_CRITICAL = {"asset", "coin", "side", "action", "price", "entry", "timefram
                   "indicators", "funding", "open_interest", "oi", "risk", "constraints"}
 
 
+def _shrink_json_value(value, limit):
+    if isinstance(value, str):
+        return value[:max(0, limit)]
+    if isinstance(value, list):
+        if not value:
+            return value
+        keep = max(1, min(len(value), limit // max(1, len(json.dumps(value[0], ensure_ascii=False, separators=(",", ":"))))))
+        return value[:keep]
+    if isinstance(value, dict):
+        return _compact_json(value, limit)
+    return value
+
+
 def _compact_json(value, limit):
-    """Bounded JSON reduction: preserve critical keys, trim lists/strings once."""
+    """Bounded JSON reduction preserving critical keys and valid JSON."""
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
@@ -197,21 +210,21 @@ def _compact_json(value, limit):
         for key, item in value.items():
             if key not in out:
                 out[key] = item
-        encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) <= limit:
-            return out
-        for key in list(out):
-            if str(key).lower() in _JSON_CRITICAL:
-                continue
-            out.pop(key)
-            encoded = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
-            if len(encoded) <= limit:
-                return out
-        return {key: out[key] for key in out if str(key).lower() in _JSON_CRITICAL}
+        while len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+            candidates = sorted(out, key=lambda key: len(json.dumps(out[key], ensure_ascii=False, separators=(",", ":"))), reverse=True)
+            key = next((key for key in candidates if isinstance(out[key], (list, dict)) or str(key).lower() not in _JSON_CRITICAL), None)
+            if key is None:
+                break
+            current = out[key]
+            encoded = json.dumps(current, ensure_ascii=False, separators=(",", ":"))
+            out[key] = _shrink_json_value(current, max(1, len(encoded) // 2))
+            if out[key] == current:
+                break
+        return out
     if isinstance(value, list):
-        out = value[:max(1, min(len(value), limit // 64))]
+        out = list(value)
         while len(out) > 1 and len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
-            out = out[:len(out) // 2]
+            out = out[:max(1, len(out) // 2)]
         return out
     return value
 

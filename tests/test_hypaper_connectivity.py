@@ -1,3 +1,5 @@
+import traceback
+
 import pytest
 import requests
 
@@ -49,6 +51,7 @@ def test_dns_connection_and_timeout_are_bounded_and_redacted():
         with pytest.raises(ConnectivityError) as exc:
             client._post("/info", {"type": "userFillsByTime", "user": "secret-wallet"}, timeout=0.001)
         assert exc.value.attempts == 5
+        assert "paper.internal" not in str(exc.value)
         assert "secret-wallet" not in str(exc.value)
         assert "DNS failure" not in str(exc.value)
         assert len(session.calls) == 5
@@ -65,7 +68,31 @@ def test_error_response_does_not_expose_payload():
     with pytest.raises(ConnectivityError) as exc:
         client._post("/info", {"type": "frontendOpenOrders", "user": "wallet"})
     assert "payload" not in str(exc.value)
+    assert "paper.internal" not in str(exc.value)
     assert "wallet" not in str(exc.value)
+
+
+def test_connectivity_logs_and_traceback_are_fully_redacted(monkeypatch, capsys):
+    import tradingagents.hyperliquid.loop as loop
+
+    url = "http://secret-host:3000/info?token=secret-token"
+    wallet = "secret-wallet"
+    payload = "secret-payload"
+    cause = requests.ConnectionError(payload)
+    client = HyPaperClient(url)
+    client.s = FailingSession(cause)
+    cfg = type("Config", (), {"wallet": wallet})()
+    monkeypatch.setattr(loop, "store", type("Store", (), {"DB": None})())
+    loop._resting_oids(client, cfg)
+    output = capsys.readouterr().out
+    try:
+        raise ConnectivityError("frontendOpenOrders", 5, cause)
+    except ConnectivityError:
+        output += traceback.format_exc()
+    for secret in (url, "secret-host", "token=secret-token", wallet, payload):
+        assert secret not in output
+    assert "frontendOpenOrders" in output
+    assert "ConnectivityError" in output
 
 
 def test_reconcile_skips_before_mutation_when_order_book_unavailable(monkeypatch):

@@ -24,16 +24,19 @@ class DataError(RuntimeError):
 
 
 class ConnectivityError(DataError):
-    """Bounded endpoint failure; callers must fail closed."""
+    """Bounded endpoint failure; callers must fail closed.
 
-    def __init__(self, base: str, path: str, attempts: int, cause: Exception):
-        self.base = base
-        self.path = path
+    The exception deliberately excludes URL, path, payload, and provider text:
+    callers log it in several operational paths, including exception traces.
+    """
+
+    def __init__(self, operation: str, attempts: int, cause: Exception):
+        self.operation = operation
         self.attempts = attempts
-        self.cause = cause
+        self.cause_type = type(cause).__name__
         super().__init__(
-            f"{base}{path} unavailable after {attempts} bounded attempts: "
-            f"{type(cause).__name__}"
+            f"{operation} unavailable after {attempts} bounded attempts: "
+            f"{self.cause_type}"
         )
 
 
@@ -54,6 +57,11 @@ class HyPaperClient:
         # l2Book): va su mainnet HL. Stato account/ordini ed /exchange restano
         # sul mirror HyPaper: e' l'unica fonte della verita' del paper wallet.
         base = self.pub_base if path == "/info" and "user" not in payload else self.base
+        operation = {
+            "frontendOpenOrders": "frontendOpenOrders",
+            "userFillsByTime": "userFillsByTime",
+            "clearinghouseState": "clearinghouseState",
+        }.get(payload.get("type"), "request")
         for attempt in range(1, 6):
             try:
                 r = self.s.post(base + path, json=payload, timeout=timeout)
@@ -62,7 +70,7 @@ class HyPaperClient:
                 r.raise_for_status()
                 body = r.json()
                 if isinstance(body, dict) and body.get("status") == "err":
-                    raise DataError(f"{path}: provider returned error status")
+                    raise DataError(f"{operation}: provider returned error status")
                 return body
             except DataError:
                 raise
@@ -70,7 +78,7 @@ class HyPaperClient:
                 last = exc
                 if attempt < 5:
                     time.sleep(0.5 * 2 ** (attempt - 1))
-        raise ConnectivityError(base, path, 5, last)
+        raise ConnectivityError(operation, 5, last)
 
     def meta(self, ttl=3600):
         if self._meta is None or time.time() - self._meta_ts > ttl:

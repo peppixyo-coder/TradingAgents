@@ -79,7 +79,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
     "llm_provider": "openai",
-    "deep_think_llm": os.getenv("UPSTREAM_LLM_MODEL", "Combo-2"),
+    "deep_think_llm": os.getenv("CUSTOM_LLM_MODEL", "Combo-1"),
     "quick_think_llm": os.getenv("UPSTREAM_LLM_MODEL", "Combo-2"),
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).

@@ -2,11 +2,10 @@ import json
 
 import pytest
 
-from tradingagents.llm_clients.openai_client import (
-    PROMPT_TOKEN_BUDGET,
-    PromptBudgetExceeded,
-    _fit_prompt_budget,
-)
+from tradingagents.llm_clients import openai_client
+
+PROMPT_TOKEN_BUDGET = openai_client.PROMPT_TOKEN_BUDGET
+_fit_prompt_budget = openai_client._fit_prompt_budget
 
 
 def oversized_market_analyst_payload():
@@ -43,5 +42,5 @@ def test_one_element_top_level_list_is_reduced_instead_of_rejected():
     assert len(json.dumps(parsed, separators=(",", ":"))) <= PROMPT_TOKEN_BUDGET * 4
 
 def test_irreducible_payload_is_blocked_before_network():
-    with pytest.raises(PromptBudgetExceeded):
+    with pytest.raises(openai_client.PromptBudgetExceeded):
         _fit_prompt_budget([{"role": "user", "content": json.dumps({"asset": "x" * 100_000})}])

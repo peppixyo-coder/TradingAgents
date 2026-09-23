@@ -35,6 +35,13 @@ def test_heterogeneous_list_is_reduced_instead_of_rejected():
     assert parsed["asset"] == "ADA"
     assert len(json.dumps(parsed, separators=(",", ":"))) <= PROMPT_TOKEN_BUDGET * 4
 
+def test_one_element_top_level_list_is_reduced_instead_of_rejected():
+    value = ["x" * 100_000]
+    fitted = _fit_prompt_budget([{"role": "user", "content": json.dumps(value)}])
+    parsed = json.loads(fitted[0]["content"])
+    assert isinstance(parsed, list)
+    assert len(json.dumps(parsed, separators=(",", ":"))) <= PROMPT_TOKEN_BUDGET * 4
+
 def test_irreducible_payload_is_blocked_before_network():
     with pytest.raises(PromptBudgetExceeded):
         _fit_prompt_budget([{"role": "user", "content": json.dumps({"asset": "x" * 100_000})}])

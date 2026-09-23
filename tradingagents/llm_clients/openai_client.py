@@ -229,8 +229,14 @@ def _compact_json(value, limit):
         return out
     if isinstance(value, list):
         out = list(value)
-        while len(out) > 1 and len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
-            out = out[:max(1, len(out) // 2)]
+        while len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > limit:
+            if len(out) > 1:
+                out = out[:max(1, len(out) // 2)]
+                continue
+            reduced = _shrink_json_value(out[0], max(1, limit - 4))
+            if reduced == out[0]:
+                break
+            out[0] = reduced
         return out
     return value
 

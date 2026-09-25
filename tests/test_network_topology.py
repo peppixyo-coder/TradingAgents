@@ -19,9 +19,11 @@ def compose_config(extra_env=""):
     with tempfile.TemporaryDirectory() as tmp:
         compose_path = os.path.join(tmp, "docker-compose.yml")
         env_path = os.path.join(tmp, ".env")
-        with open(COMPOSE, encoding="utf-8") as source:
-            with open(compose_path, "w", encoding="utf-8") as target:
-                target.write(source.read())
+        with (
+            open(COMPOSE, encoding="utf-8") as source,
+            open(compose_path, "w", encoding="utf-8") as target,
+        ):
+            target.write(source.read())
         with open(env_path, "w", encoding="utf-8") as target:
             target.write(env_text)
         child_env = os.environ.copy()

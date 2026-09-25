@@ -13,7 +13,6 @@ import requests
 
 from . import store
 
-
 FNG_URL = "https://api.alternative.me/fng/?limit=1"
 RSS_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 WS_URL = "wss://api.hyperliquid.xyz/ws"
@@ -78,7 +77,7 @@ class HyPaperClient:
                 last = exc
                 if attempt < 5:
                     time.sleep(0.5 * 2 ** (attempt - 1))
-        raise ConnectivityError(operation, 5, last)
+        raise ConnectivityError(operation, 5, last) from None
 
     def meta(self, ttl=3600):
         if self._meta is None or time.time() - self._meta_ts > ttl:

@@ -78,19 +78,27 @@ def test_connectivity_logs_and_traceback_are_fully_redacted(monkeypatch, capsys)
     url = "http://secret-host:3000/info?token=secret-token"
     wallet = "secret-wallet"
     payload = "secret-payload"
-    cause = requests.ConnectionError(payload)
     client = HyPaperClient(url)
-    client.s = FailingSession(cause)
+    client.s = FailingSession(requests.ConnectionError(payload))
     cfg = type("Config", (), {"wallet": wallet})()
     monkeypatch.setattr(loop, "store", type("Store", (), {"DB": None})())
     loop._resting_oids(client, cfg)
     output = capsys.readouterr().out
-    try:
-        raise ConnectivityError("frontendOpenOrders", 5, cause)
-    except ConnectivityError:
-        output += traceback.format_exc()
-    for secret in (url, "secret-host", "token=secret-token", wallet, payload):
-        assert secret not in output
+
+    # Real path: _post against a failing session, never a hand-rolled raise.
+    with pytest.raises(ConnectivityError) as exc_info:
+        client._post("/info", {"type": "frontendOpenOrders", "user": wallet})
+    exc = exc_info.value
+    output += "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+    secrets = (url, "secret-host", "token=secret-token", wallet, payload)
+    for value in (repr(exc), str(exc), output):
+        for secret in secrets:
+            assert secret not in value
+    # `from None` must be explicit: suppression must not depend on the raise
+    # happening to sit outside an except block.
+    assert exc.__suppress_context__ is True
+    assert exc.__cause__ is None
     assert "frontendOpenOrders" in output
     assert "ConnectivityError" in output
 

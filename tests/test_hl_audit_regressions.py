@@ -103,6 +103,8 @@ class _ReconClient:
         return []                                         # atr None -> fallback mid*2%
 
     def _post(self, path, payload, timeout=30):
+        if payload.get("type") == "frontendOpenOrders":
+            return [{"oid": 9, "reduceOnly": True, "coin": "DOGE"}]
         return {"response": {"data": {"statuses": [{"resting": {"oid": 9}}]}}}
 
 

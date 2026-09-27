@@ -33,10 +33,23 @@ class ConnectivityError(DataError):
         self.operation = operation
         self.attempts = attempts
         self.cause_type = type(cause).__name__
+        # An HTTP status code is not endpoint/payload data: exposing it keeps
+        # 429 vs 5xx classifiable from logs without breaking the redaction.
+        self.status_code = getattr(getattr(cause, "response", None), "status_code", None)
+        detail = (self.cause_type if self.status_code is None
+                  else f"{self.cause_type}({self.status_code})")
         super().__init__(
-            f"{operation} unavailable after {attempts} bounded attempts: "
-            f"{self.cause_type}"
+            f"{operation} unavailable after {attempts} bounded attempts: {detail}"
         )
+
+
+# HL enforces a per-minute rate-limit window on the public API: a retry that
+# waits less than the window just burns the whole budget inside it. PR #4
+# replaced the old 21s-per-429 sleep with ~15.5s of total backoff, which is
+# under the window, so every 429 escalated to ConnectivityError. This wait
+# must stay >= 60s; worst case 4 x 62 + timeouts stays bounded and far under
+# CYCLE_MAX_RUNTIME_S (1800).
+RATE_LIMIT_WAIT_S = 62.0
 
 
 class HyPaperClient:
@@ -49,6 +62,7 @@ class HyPaperClient:
         self._meta_ts = 0.0
         self._mids_hip = None
         self._mids_ts = 0.0
+
 
     def _post(self, path, payload, timeout=15):
         last = None
@@ -65,7 +79,7 @@ class HyPaperClient:
             try:
                 r = self.s.post(base + path, json=payload, timeout=timeout)
                 if r.status_code == 429:
-                    raise requests.HTTPError("429")
+                    raise requests.HTTPError("429", response=r)
                 r.raise_for_status()
                 body = r.json()
                 if isinstance(body, dict) and body.get("status") == "err":
@@ -76,7 +90,10 @@ class HyPaperClient:
             except requests.RequestException as exc:
                 last = exc
                 if attempt < 5:
-                    time.sleep(0.5 * 2 ** (attempt - 1))
+                    if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                        time.sleep(RATE_LIMIT_WAIT_S)
+                    else:
+                        time.sleep(0.5 * 2 ** (attempt - 1))
         raise ConnectivityError(operation, 5, last) from None
 
     def meta(self, ttl=3600):

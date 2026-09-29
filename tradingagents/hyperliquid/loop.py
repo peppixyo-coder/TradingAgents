@@ -50,6 +50,10 @@ CYCLE_MAX_RUNTIME_S = int(os.getenv("CYCLE_MAX_RUNTIME_S", "1800"))  # tetto cic
 # (ordine T42: UPSTREAM 1080 < PER_ASSET 1200 < CYCLE 1800; riga cancellata
 # per errore in 85553c6 e restaurata in T50 r3)
 GRAPH_STAGGER_S = float(os.getenv("HL_GRAPH_STAGGER_S", "15"))  # T33: offset tra avvii
+GRAPH_MIN_BUDGET_S = int(os.getenv("GRAPH_MIN_BUDGET_S", "600"))  # T72: floor budget
+# grafi: sotto questo residuo non si lancia l'ondata (i grafi morirebbero per
+# budget subito: 9 abbandoni a budget 60 nel 24h-check T70). Salto + retry al
+# ciclo dopo, stesso trattamento dei BudgetAborted T42 (niente cooldown).
 # ticket A: dopo un errore/timeout di grafo la coin va in cooldown -
 # non ritenta il ciclo dopo (evita che una coin lenta/rotta domini).
 GRAPH_COOLDOWN_S = int(os.getenv("HL_GRAPH_COOLDOWN_S", "3600"))
@@ -76,6 +80,13 @@ def graph_in_cooldown(coin: str) -> bool:
 
 
 MONITOR_INTERVAL_S = int(os.getenv("HL_MONITOR_INTERVAL_S", "60"))
+
+
+def _sleep_remain(elapsed, interval):
+    """T72: attesa al prossimo ciclo misurata dalla PARTENZA, non dalla fine.
+    Oltre il cap il troncamento e' reale: sleep_remain=0 invece di 1800s dalla
+    fine del ciclo (cicli 2009/2098/4223s + skip del giro)."""
+    return max(0, interval - elapsed)
 
 
 def _ts(s):
@@ -894,23 +905,28 @@ def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
         finally:
             llm.disarm_budget()
 
+    # T72: budget TOTALE calcolato PRIMA del lancio — con workers<len(jobs) un
+    # solo grafo lento esaurirebbe il budget bloccando gli altri. Si scala per
+    # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S, ma non
+    # oltre il residuo di ciclo: sotto il floor non si lancia (era floor 60).
+    waves = (len(jobs) + workers - 1) // workers
+    budget = GRAPH_TIMEOUT_S * waves
+    if t_cycle is not None:
+        budget = min(budget, max(CYCLE_MAX_RUNTIME_S - (time.time() - t_cycle), 0))
+        if budget < GRAPH_MIN_BUDGET_S:  # residuo < floor: ondata a morte certa
+            log(f"[loop] grafi: budget {budget:.0f}s < floor {GRAPH_MIN_BUDGET_S}s "
+                f"-> salto ondata, riprovo al prossimo ciclo")
+            pool.shutdown(wait=False)
+            return
+    log(f"[loop] grafi: {len(jobs)} job, {workers} worker, budget {budget:.0f}s "
+        f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves}, "
+        f"stagger {GRAPH_STAGGER_S:.0f}s)")
     for i, (r, pre) in enumerate(jobs):
         if i:
             time.sleep(GRAPH_STAGGER_S)
         futs[pool.submit(_run_one, r, pre)] = r
         log(f"[loop] graph {i + 1}/{len(jobs)} {r['coin']} start "
             f"(offset {i * GRAPH_STAGGER_S:.0f}s)")
-    # wait() ha un budget TOTALE: con workers<len(jobs) (es. seriale) un solo
-    # grafo lento esaurirebbe il budget bloccando gli altri. Si scala per
-    # numero di ondate cosi' ogni grafo conserva il suo GRAPH_TIMEOUT_S,
-    # ma non oltre il tetto del ciclo: il budget residuo vince.
-    waves = (len(jobs) + workers - 1) // workers
-    budget = GRAPH_TIMEOUT_S * waves
-    if t_cycle is not None:
-        budget = min(budget, max(CYCLE_MAX_RUNTIME_S - (time.time() - t_cycle), 60))
-    log(f"[loop] grafi: {len(jobs)} job, {workers} worker, budget {budget:.0f}s "
-        f"(per-grafo {GRAPH_TIMEOUT_S}s, ondate {waves}, "
-        f"stagger {GRAPH_STAGGER_S:.0f}s)")
     # T41: wait a step brevi + sweep: gli zombie (budget per-grafo scaduto,
     # chiamata LLM in volo) vengono loggati una volta per ciclo; l'abort
     # cooperativo li fermere' alla prossima invoke.
@@ -1081,6 +1097,22 @@ def main(argv=None):
             log(f"[loop] ciclo completato in {time.time() - t_cycle:.0f}s")
             _log_cycle(stage="cycle_done",
                        dur_s=round(time.time() - t_cycle, 1))
+            # T72: il cap 1800 non troncava davvero (cicli 2009/2098/4223s).
+            # Raccolta risultati completa (un ordine emesso non si scarta,
+            # fail-closed rispettato), ma la fase di chiusura ciclo si tronca:
+            # il prossimo ciclo si riallinea al ritmo senza ritardo accumulato.
+            elapsed = time.time() - t_cycle
+            if elapsed > CYCLE_MAX_RUNTIME_S:
+                log(f"[loop] ciclo oltre cap ({elapsed:.0f}s > "
+                    f"{CYCLE_MAX_RUNTIME_S}s): tronco, riallineo il prossimo")
+            if once:
+                break
+            if cycles_left > 0:
+                cycles_left -= 1
+                if cycles_left == 0:
+                    break
+            time.sleep(_sleep_remain(elapsed, interval))
+            continue
         except Exception as e:
             _log_cycle(stage="error", error=repr(e))
             log(f"[loop] ERRORE ciclo: {e!r}")

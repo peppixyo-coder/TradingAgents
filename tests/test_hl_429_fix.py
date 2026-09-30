@@ -110,3 +110,17 @@ def test_redaction_holds_on_status_bearing_failure(monkeypatch):
         assert secret not in str(exc)
         assert secret not in repr(exc)
     assert exc.status_code == 500
+
+
+def test_429_marker_redacted(monkeypatch, capsys):
+    """T71: il marker [rate-limit] parla solo di op whitelisted + attempt
+    (niente host/token/wallet) — redazione PR #4 intatta anche nel marker."""
+    _patch_sleep(monkeypatch)
+    client = HyPaperClient("http://secret-host:3000/info?token=secret-token")
+    client.s = SequenceSession([FakeResponse(429), FakeResponse(200)])
+    client._post("/info", {"type": "frontendOpenOrders", "user": "secret-wallet"})
+    out = capsys.readouterr().out
+    assert "[rate-limit] wait 62s" in out
+    assert "op=frontendOpenOrders" in out
+    for secret in ("secret-host", "token=secret-token", "secret-wallet"):
+        assert secret not in out

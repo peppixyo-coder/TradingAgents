@@ -4,6 +4,7 @@ HyPaper :3000 specchia /info e /exchange senza firme; i trade pubblici non sono
 sul suo WS -> la finestra OFI si raccoglie direttamente dal WS di Hyperliquid.
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,20 @@ class ConnectivityError(DataError):
 # CYCLE_MAX_RUNTIME_S (1800).
 RATE_LIMIT_WAIT_S = 62.0
 
+# T72: jitter TTL su candles_cached. I ~70 coin scadono IN FASE ogni TTL
+# (stesso time.time() per tutti) -> burst di candleSnapshot = trigger 429
+# misurato (probe: 4°/5° colpo sequenziale). Le scadenze si spargono su
+# 2*CANDLE_TTL_JITTER_S secondi per coin, via sha256(coin:interval) —
+# deterministico tra run (hash() built-in non lo e', PYTHONHASHSEED).
+# candleSnapshot NON accetta batch (req-list -> 422, verificato live): questo
+# e' l'unico fix radice disponibile.
+CANDLE_TTL_JITTER_S = int(os.getenv("HL_CANDLE_TTL_JITTER_S", "300"))
+
+
+def _ttl_jitter(coin, interval):
+    """Offset deterministico in [-CANDLE_TTL_JITTER_S, +CANDLE_TTL_JITTER_S]."""
+    h = hashlib.sha256(f"{coin}:{interval}".encode()).hexdigest()
+    return int(h, 16) % (2 * CANDLE_TTL_JITTER_S + 1) - CANDLE_TTL_JITTER_S
 
 class HyPaperClient:
     def __init__(self, base_url):
@@ -91,6 +106,10 @@ class HyPaperClient:
                 last = exc
                 if attempt < 5:
                     if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                        # T71: marker di misura del rate-limit (op whitelistato,
+                        # mai URL/payload/wallet — redazione PR #4 intatta).
+                        print(f"[rate-limit] wait {RATE_LIMIT_WAIT_S:.0f}s "
+                              f"op={operation} attempt={attempt}", flush=True)
                         time.sleep(RATE_LIMIT_WAIT_S)
                     else:
                         time.sleep(0.5 * 2 ** (attempt - 1))
@@ -149,8 +168,10 @@ class HyPaperClient:
                 for c in raw]
 
     def candles_cached(self, coin, interval, lookback_ms):
-        """Candele con cache kv condivisa; TTL = durata del timeframe."""
+        """Candele con cache kv condivisa; TTL = durata del timeframe + jitter
+        deterministico per-coin (T72: sparga le scadenze, niente burst in-fase)."""
         ttl = {"1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 600)
+        ttl += _ttl_jitter(coin, interval)
         key = f"candles:{coin}:{interval}"
         try:
             if time.time() - float(store.kv_get(key + ":ts") or 0) < ttl:

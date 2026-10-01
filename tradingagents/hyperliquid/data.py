@@ -85,10 +85,17 @@ class HyPaperClient:
         # l2Book): va su mainnet HL. Stato account/ordini ed /exchange restano
         # sul mirror HyPaper: e' l'unica fonte della verita' del paper wallet.
         base = self.pub_base if path == "/info" and "user" not in payload else self.base
+        # T73: whitelist estesa coi type di mercato (solo questi 4, decisi
+        # dall'umano): il marker dice quale endpoint sfora il rate-limit, non
+        # piu' solo "request". Restano stringhe fisse di API, mai payload.
         operation = {
             "frontendOpenOrders": "frontendOpenOrders",
             "userFillsByTime": "userFillsByTime",
             "clearinghouseState": "clearinghouseState",
+            "candleSnapshot": "candleSnapshot",
+            "allMids": "allMids",
+            "metaAndAssetCtxs": "metaAndAssetCtxs",
+            "l2Book": "l2Book",
         }.get(payload.get("type"), "request")
         for attempt in range(1, 6):
             try:

@@ -204,10 +204,98 @@ def equity(c, cfg):
     return round(bal, 2)
 
 
+_MON = threading.local()  # T73: snapshot per-passo, visibile SOLO al thread monitor
+_FILL_CACHE = {"sig": None, "filled": None}  # ultimo fetch fills + firma (oid, szi)
+
+
+class _MonitorSnap:
+    """Stato di mercato per UN passo di monitor, condiviso da maintain_tps/
+    reconcile/maintain_trailing.
+
+    T73: prima ogni passo (60s) rifaceva 3x clearinghouseState + (N_intenti+1)x
+    frontendOpenOrders + 1x userFillsByTime (intera storia fills) = ~12+
+    richieste/60s su un rate-limit per-IP condiviso col ciclo -> 429
+    strutturali (24h-check T72: 44% dei marker nella fase monitor). Qui:
+    1x clearinghouseState + 1x book per passo; i fills (il piu' pesante) solo
+    quando la firma (oid resting, szi live) cambia — un fill cambia sempre
+    almeno uno dei due, quindi nessun fill passa inosservato. Le mutazioni
+    (cancel/place) invalidano il book: il prossimo lettore rifa il fetch e il
+    ri-attach dello stop mancante resta nello stesso passo, come prima.
+    Frequenza monitor INVARIATA (60s): la reazione del trailing e' rischio,
+    non si degrada per risparmiare richieste (divieto esplicito T73)."""
+
+    def __init__(self, c, cfg):
+        self.c, self.cfg = c, cfg
+        self._ch = self._orders = None
+
+    def clearinghouse(self):
+        if self._ch is None:
+            self._ch = self.c.clearinghouse_state(self.cfg.wallet)
+        return self._ch
+
+    def orders(self):
+        if self._orders is None:
+            self._orders = self.c._post("/info", {"type": "frontendOpenOrders",
+                                                  "user": self.cfg.wallet})
+        return self._orders
+
+    def invalidate(self):
+        self._orders = None  # post-mutazione: prossimo lettore refetch
+
+    def filled_oids(self):
+        """Fill-gate: refetch solo se (oid resting, szi live) cambiano."""
+        sig = (frozenset(str(o.get("oid")) for o in self.orders()),
+               frozenset((p["position"]["coin"],
+                          round(abs(float(p["position"]["szi"])), 12))
+                         for p in self.clearinghouse()["assetPositions"]))
+        if _FILL_CACHE["sig"] == sig:
+            return _FILL_CACHE["filled"]
+        try:
+            fills = self.c._post("/info", {"type": "userFillsByTime",
+                                           "user": self.cfg.wallet, "startTime": 0})
+        except Exception as e:
+            log(f"[TP] userFills non disponibile: {e}")
+            return None  # fail-closed come il path diretto: nessuna mutazione
+        out = {str(f["oid"]) for f in fills if f.get("oid") is not None}
+        _FILL_CACHE["sig"], _FILL_CACHE["filled"] = sig, out
+        return out
+
+
+def _snap():
+    """Snapshot del passo di monitor corrente; None fuori dal thread monitor."""
+    return getattr(_MON, "snap", None)
+
+
+def _inv():
+    """Invalida il book snapshot dopo una mutazione (cancel/place)."""
+    s = _snap()
+    if s is not None:
+        s.invalidate()
+
+
+def _ch_state(c, cfg):
+    """clearinghouseState: cache per-passo nel thread monitor, altrimenti diretto."""
+    s = _snap()
+    return s.clearinghouse() if s is not None else c.clearinghouse_state(cfg.wallet)
+
+
+def _book(c, cfg):
+    """frontendOpenOrders: cache per-passo nel thread monitor, altrimenti diretto."""
+    s = _snap()
+    return s.orders() if s is not None else \
+        c._post("/info", {"type": "frontendOpenOrders", "user": cfg.wallet})
+
+
+def _fills(c, cfg):
+    """userFillsByTime: con snapshot passa dal fill-gate, altrimenti diretto (fail closed)."""
+    s = _snap()
+    return s.filled_oids() if s is not None else _filled_oids(c, cfg)
+
+
 def _has_live_stop(c, cfg, coin):
     """True se esiste un ordine trigger reduce-only aperto sul coin."""
     try:
-        orders = c._post("/info", {"type": "frontendOpenOrders", "user": cfg.wallet})
+        orders = _book(c, cfg)
         return any(o.get("reduceOnly") and o.get("triggerPx")
                    and str(o.get("coin", "")) == coin for o in orders)
     except Exception as e:  # endpoint giu' -> non blocchiare il loop; ri-attach solo se None
@@ -222,6 +310,7 @@ def attach_stop(ex, intent):
     q = intent.get("remaining_size") or intent["qty"]
     r = ex.place_trigger(intent["coin"], close_side, q,
                          intent["stop_px"], tpsl="sl")
+    _inv()  # T73: place muta il book -> snapshot invalidata
     log(f"  stop {'attachato' if r['status'] == 'resting' else 'ESITO ' + r['status']}: "
         f"{r.get('oid') or r.get('error')} @ {intent['stop_px']}")
     if r["status"] == "resting":
@@ -235,10 +324,10 @@ def _cancel_resting_tps(ex, it, c=None, cfg=None):
     resterebbero zombie nel book."""
     gone = ex.cancel_tp_orders(it["coin"],
                                [it.get(f"tp{n}_oid") for n in (1, 2, 3)])
+    _inv()  # T73: cancel_tp_orders muta -> il book dev'essere fresco per lo scan
     if c is not None and cfg is not None:
         try:
-            orders = c._post("/info", {"type": "frontendOpenOrders",
-                                       "user": cfg.wallet})
+            orders = _book(c, cfg)
             for o in orders:
                 if str(o.get("coin", "")) == it["coin"] and o.get("reduceOnly") \
                         and o.get("oid"):
@@ -286,6 +375,7 @@ def move_stop_to_breakeven(c, cfg, ex, it):
         return False
     if it.get("stop_oid"):
         r = ex.cancel_order(it["coin"], it["stop_oid"])
+        _inv()  # T73: mutazione -> snapshot invalidata
         if str(r.get("status", "")).lower() != "canceled":
             log(f"[TP] {it['coin']}: cancel stop per BE = {r.get('status')}; "
                 f"riprovo al prossimo ciclo")
@@ -293,6 +383,7 @@ def move_stop_to_breakeven(c, cfg, ex, it):
     q = it.get("remaining_size") or it["qty"]
     close_side = "short" if it["side"] == "long" else "long"
     r = ex.place_trigger(it["coin"], close_side, q, it["entry_px"], tpsl="sl")
+    _inv()  # T73: place fallito -> reconcile vede il book FRESH e ri-attacha
     if r.get("status") != "resting":
         log(f"[TP] ATTENZIONE {it['coin']}: place BE = {r.get('status')} "
             f"{r.get('error', '')}; reconcile ri-attacha il vecchio stop")
@@ -305,8 +396,7 @@ def move_stop_to_breakeven(c, cfg, ex, it):
 def _resting_oids(c, cfg):
     """Insieme degli oid resting (frontendOpenOrders); None se endpoint giu'."""
     try:
-        orders = c._post("/info", {"type": "frontendOpenOrders",
-                                   "user": cfg.wallet})
+        orders = _book(c, cfg)
         return {str(o.get("oid")) for o in orders}
     except Exception as e:
         log(f"[TP] frontendOpenOrders non disponibile: {e}")
@@ -332,7 +422,7 @@ def maintain_tps(c, cfg, ex):
     nel book (reduce-only, clampato: innocuo) - rilevarlo richiederebbe un match
     su frontendOpenOrders; aggiungere solo se si manifesta.
     Ritorna (numero fill rilevati, numero BE move)."""
-    ch = c.clearinghouse_state(cfg.wallet)
+    ch = _ch_state(c, cfg)
     live = {p["position"]["coin"]: abs(float(p["position"]["szi"]))
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
     resting = _resting_oids(c, cfg)
@@ -341,7 +431,7 @@ def maintain_tps(c, cfg, ex):
         log(f"[TP] ATTENZIONE frontendOpenOrders non disponibile: "
             f"rilevamento fill TP rimandato al prossimo pass")
         return 0, 0
-    filled_oids = _filled_oids(c, cfg)
+    filled_oids = _fills(c, cfg)  # T73: fill-gate (refetch solo se oid/szi cambiano)
     if filled_oids is None:
         log(f"[TP] ATTENZIONE userFills non disponibile: "
             f"rilevamento fill TP rimandato al prossimo pass")
@@ -379,6 +469,7 @@ def maintain_tps(c, cfg, ex):
             for n in [n for n in planned if not it[f"tp{n}_oid"]]:
                 r = ex.place_limit(it["coin"], opp, float(it[f"tp{n}_size"]),
                                    float(it[f"tp{n}_px"]))
+                _inv()  # T73: place muta il book -> snapshot invalidata
                 ok = r.get("status") in ("resting", "filled", "success")
                 log(f"[TP] {it['coin']}: re-place TP{n} @ {it[f'tp{n}_px']:g} "
                     f"-> {r.get('status')} {r.get('error', '')}")
@@ -416,7 +507,7 @@ def reconcile(c, cfg, ex):
         log("[reconcile] frontendOpenOrders non disponibile: skip fail-closed")
         return
     positions, entries = {}, {}
-    for p in c.clearinghouse_state(cfg.wallet)["assetPositions"]:
+    for p in _ch_state(c, cfg)["assetPositions"]:
         pos = p["position"]
         if float(pos["szi"]) != 0:
             positions[pos["coin"]] = float(pos["szi"])
@@ -453,6 +544,7 @@ def reconcile(c, cfg, ex):
             it["qty"] = it["remaining_size"] = real
             if it["stop_oid"]:
                 r = ex.cancel_order(it["coin"], it["stop_oid"])
+                _inv()  # T73: mutazione -> snapshot invalidata
                 if str(r.get("status", "")).lower() == "canceled":
                     attach_stop(ex, it)
                 else:
@@ -502,7 +594,7 @@ def maintain_trailing(c, cfg, ex):
     1 ATR. Lo stop non torna mai indietro; cancel-then-place con rete di
     sicurezza: se il place fallisce, il reconcile ri-attacha il vecchio stop.
     Ritorna il numero di stop spostati."""
-    ch = c.clearinghouse_state(cfg.wallet)
+    ch = _ch_state(c, cfg)
     live = {p["position"]["coin"]: p["position"]
             for p in ch["assetPositions"] if float(p["position"]["szi"]) != 0}
     mids = c.all_mids()
@@ -533,6 +625,7 @@ def maintain_trailing(c, cfg, ex):
             continue
         if it["stop_oid"]:
             r = ex.cancel_order(it["coin"], it["stop_oid"])
+            _inv()  # T73: mutazione -> book snapshot invalidata (ri-attach same-pass)
             if str(r.get("status", "")).lower() != "canceled":
                 log(f"[Trailing] {it['coin']}: cancel vecchio stop "
                     f"{it['stop_oid']} = {r.get('status')}; riprovo al ciclo dopo")
@@ -541,6 +634,7 @@ def maintain_trailing(c, cfg, ex):
         r = ex.place_trigger(it["coin"], close_side,
                              it["remaining_size"] or it["qty"], cand,
                              tpsl="sl")
+        _inv()  # T73: place fallito -> reconcile vede il book FRESH e ri-attacha
         if r.get("status") == "resting":
             store.intent_move_stop(it["id"], cand, r["oid"])
             moved += 1
@@ -864,12 +958,17 @@ def _monitor_loop(c, cfg, ex):
     while True:
         _touch_heartbeat()  # liveness ogni 60s, indipendente dal ciclo LLM
         log("[monitor] heartbeat")
+        # T73: UNA snapshot per passo (1x clearinghouseState + 1x book, fills
+        # con gate), condivisa dalle 3 funzioni. Frequenza INVARIATA: la
+        # reazione del trailing resta rischio, non si degrada.
+        _MON.snap = _MonitorSnap(c, cfg)
         for fn in (maintain_tps, reconcile, maintain_trailing):
             try:
                 with _ORDER_LOCK:
                     fn(c, cfg, ex)
             except Exception as e:  # noqa: BLE001 - un passo ko non ferma gli altri
                 log(f"[monitor] ERRORE {fn.__name__}: {e!r}")
+        _MON.snap = None  # mai condivisa col thread del ciclo: run_cycle resta a fetch diretto
         time.sleep(MONITOR_INTERVAL_S)
 def _run_graphs_parallel(cfg, c, ex, jobs, t_cycle=None):
     """Gira i grafi LLM in parallelo (fix a) con hard timeout (fix c) e avvio
